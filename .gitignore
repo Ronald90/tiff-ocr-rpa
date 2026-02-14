@@ -1,0 +1,26 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno (contiene API keys)
+.env
+
+# Logs
+*.log
+
+# Archivos de procesamiento
+output/
+processed/
+error/
+.processed_history.json
+
+# Archivos TIFF (datos de entrada)
+input/*.tif
+input/*.tiff
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

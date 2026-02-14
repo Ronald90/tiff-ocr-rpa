@@ -1,0 +1,16 @@
+{
+  "name": "tiff-ocr-rpa",
+  "version": "2.0.0",
+  "description": "RPA para OCR de archivos TIFF multipágina usando GPT-4o Vision",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node main.js",
+    "watch": "node watcher.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "openai": "^4.0.0",
+    "sharp": "^0.33.0"
+  }
+}
