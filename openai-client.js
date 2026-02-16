@@ -3,10 +3,13 @@ import config from './config.js';
 import proxyAgent from './proxy.js';
 
 // Instancia compartida de OpenAI — reutilizada por ocr-engine.js y extractor.js
-// httpAgent inyecta el ProxyAgent de undici para redes corporativas con proxy
-const openai = new OpenAI({
-    apiKey: config.apiKey,
-    httpAgent: proxyAgent,
-});
+// fetchOptions.dispatcher inyecta el ProxyAgent de undici para redes corporativas
+const options = { apiKey: config.apiKey };
+
+if (proxyAgent) {
+    options.fetchOptions = { dispatcher: proxyAgent };
+}
+
+const openai = new OpenAI(options);
 
 export default openai;
