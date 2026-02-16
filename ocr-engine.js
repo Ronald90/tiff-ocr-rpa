@@ -67,7 +67,8 @@ async function ocrWithVision(pngBuffer, pageNum) {
 
             const isRateLimit = err.status === 429;
             const waitTime = isRateLimit ? config.retryDelayMs * attempt : config.retryDelayMs;
-            logger.warn(`Reintento ${attempt}/${config.maxRetries} para página ${pageNum} (espera ${waitTime / 1000}s)`);
+            const detail = err.code || err.cause?.code || err.message;
+            logger.warn(`Reintento ${attempt}/${config.maxRetries} para página ${pageNum}: ${detail} (espera ${waitTime / 1000}s)`);
             await sleep(waitTime);
         } finally {
             clearTimeout(timeout);
