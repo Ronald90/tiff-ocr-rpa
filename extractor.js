@@ -16,7 +16,8 @@ A partir del texto OCR de un documento, extrae los siguientes campos en formato 
   "departamento": "Departamento de Bolivia al que pertenece la ciudad. Usa tu conocimiento de la geografía boliviana para identificarlo.",
   "fecha": "Fecha del documento normalizada a formato ISO YYYY-MM-DD. Puede venir en cualquier formato de texto.",
   "destinatario": "Nombre o institución a quien va dirigido. Si solo dice 'Señores' sin especificar, déjalo como string vacío.",
-  "referencia": "Asunto o referencia del documento. Busca después de 'REF:' o 'REFERENCIA:'.",
+  "referencia": "Asunto o referencia del documento. Busca después de 'REF:' o 'REFERENCIA:'. Incluye todo el texto de la referencia.",
+  "numero_tramite": "Número de trámite que aparece en la referencia, generalmente con formato 'T-XXXXXXXXXX' después de 'TRÁMITE Nº'. Si no existe, devuelve string vacío.",
   "para_conocimiento": "Array con las entidades listadas para conocimiento y cumplimiento. Si no existe esta sección, devuelve array vacío.",
   "documentos_adjuntos": "Array con los documentos adjuntos o detallados que se mencionan. Si no existen, devuelve array vacío."
 }
@@ -88,6 +89,7 @@ export async function extractFields(ocrText) {
                     fecha: '',
                     destinatario: '',
                     referencia: '',
+                    numero_tramite: '',
                     para_conocimiento: [],
                     documentos_adjuntos: [],
                     _error: err.message

@@ -63,6 +63,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | `fecha` | string | Fecha en formato YYYY-MM-DD |
 | `destinatario` | string | A quién va dirigido |
 | `referencia` | string | Asunto o referencia (REF:) |
+| `numero_tramite` | string | Número de trámite (ej: T-1211407819) |
 | `para_conocimiento` | array | Entidades para conocimiento y cumplimiento |
 | `documentos_adjuntos` | array | Documentos adjuntos listados |
 
