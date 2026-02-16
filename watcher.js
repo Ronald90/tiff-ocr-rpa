@@ -93,20 +93,27 @@ async function processPendingFiles() {
             try {
                 const result = await processFile(filePath, config.outputDir);
 
-                // Registrar en historial
-                history[fileKey] = {
-                    date: new Date().toISOString(),
-                    pages: result.numPages,
-                    success: result.success,
-                    errors: result.errors,
-                    elapsed: result.elapsed,
-                    output: path.basename(result.outputPath)
-                };
-                saveHistory(history);
+                // Solo registrar como procesado si hubo al menos 1 página exitosa
+                if (result.success > 0) {
+                    history[fileKey] = {
+                        date: new Date().toISOString(),
+                        pages: result.numPages,
+                        success: result.success,
+                        errors: result.errors,
+                        elapsed: result.elapsed,
+                        output: path.basename(result.outputPath)
+                    };
+                    saveHistory(history);
 
-                // Mover a processed
-                moveFile(filePath, config.processedDir);
-                logger.success(`📁 ${filename} → processed/`);
+                    // Mover a processed
+                    moveFile(filePath, config.processedDir);
+                    logger.success(`📁 ${filename} → processed/`);
+                } else {
+                    // Todas las páginas fallaron — mover a error para reprocesar después
+                    logger.error(`Todas las páginas fallaron para ${filename}, moviendo a error/`);
+                    moveFile(filePath, config.errorDir);
+                    logger.warn(`📁 ${filename} → error/`);
+                }
 
             } catch (err) {
                 logger.error(`Error fatal procesando ${filename}: ${err.message}`);
