@@ -2,6 +2,9 @@ import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
 
+// Máximo de caracteres a enviar al extractor (≈ primeras 2-3 páginas)
+const MAX_EXTRACT_CHARS = 8000;
+
 const EXTRACTION_PROMPT = `Eres un sistema de extracción de datos de documentos oficiales de Bolivia (ASFI, reguladores financieros, entidades gubernamentales, etc.).
 
 A partir del texto OCR de un documento, extrae los siguientes campos en formato JSON:
@@ -26,46 +29,70 @@ REGLAS:
 - Para el departamento, identifícalo usando tu conocimiento completo de la geografía de Bolivia. Los 9 departamentos son: La Paz, Santa Cruz, Cochabamba, Chuquisaca, Oruro, Potosí, Tarija, Beni, Pando.
 - Devuelve ÚNICAMENTE el JSON válido, sin explicaciones, comentarios ni markdown.`;
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 /**
  * Extrae campos estructurados del texto OCR usando GPT-4o.
+ * Solo envía las primeras páginas (≈8000 chars) para ahorrar tokens,
+ * ya que los metadatos del documento siempre están al inicio.
  * @param {string} ocrText — Texto completo del OCR (todas las páginas concatenadas)
  * @returns {object} — Campos extraídos
  */
 export async function extractFields(ocrText) {
-    try {
-        logger.info('🔍 Extrayendo campos del documento...');
+    // Solo enviar las primeras páginas — los metadatos están al inicio
+    const truncated = ocrText.length > MAX_EXTRACT_CHARS
+        ? ocrText.substring(0, MAX_EXTRACT_CHARS) + '\n\n[... texto restante omitido ...]'
+        : ocrText;
 
-        const response = await openai.chat.completions.create({
-            model: config.model,
-            response_format: { type: 'json_object' },
-            messages: [
-                { role: 'system', content: EXTRACTION_PROMPT },
-                { role: 'user', content: `Extrae los campos del siguiente texto de documento:\n\n${ocrText}` }
-            ],
-            max_tokens: 1024,
-            temperature: 0.0
-        });
+    const charsSent = truncated.length;
+    logger.info(`🔍 Extrayendo campos del documento (${charsSent} chars de ${ocrText.length} total)...`);
 
-        const raw = response.choices[0].message.content.trim();
-        const data = JSON.parse(raw);
+    for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
+        try {
+            const response = await openai.chat.completions.create({
+                model: config.model,
+                response_format: { type: 'json_object' },
+                messages: [
+                    { role: 'system', content: EXTRACTION_PROMPT },
+                    { role: 'user', content: `Extrae los campos del siguiente texto de documento:\n\n${truncated}` }
+                ],
+                max_tokens: 1024,
+                temperature: 0.0
+            });
 
-        logger.success('🔍 Campos extraídos correctamente');
-        return data;
+            const raw = response.choices[0].message.content.trim();
+            const data = JSON.parse(raw);
 
-    } catch (err) {
-        logger.error(`🔍 Error extrayendo campos: ${err.message}`);
+            logger.success('🔍 Campos extraídos correctamente');
+            return data;
 
-        return {
-            tipo_documento: '',
-            numero_documento: '',
-            ciudad: '',
-            departamento: '',
-            fecha: '',
-            destinatario: '',
-            referencia: '',
-            para_conocimiento: [],
-            documentos_adjuntos: [],
-            _error: err.message
-        };
+        } catch (err) {
+            const isRateLimit = err.status === 429;
+            const detail = err.code || err.cause?.code || err.message;
+
+            if (attempt < config.maxRetries) {
+                const waitTime = isRateLimit
+                    ? config.retryDelayMs * attempt * 2  // Espera más larga para rate limits
+                    : config.retryDelayMs;
+                logger.warn(`🔍 Reintento extractor ${attempt}/${config.maxRetries}: ${detail} (espera ${waitTime / 1000}s)`);
+                await sleep(waitTime);
+            } else {
+                logger.error(`🔍 Error extrayendo campos después de ${config.maxRetries} intentos: ${err.message}`);
+                return {
+                    tipo_documento: '',
+                    numero_documento: '',
+                    ciudad: '',
+                    departamento: '',
+                    fecha: '',
+                    destinatario: '',
+                    referencia: '',
+                    para_conocimiento: [],
+                    documentos_adjuntos: [],
+                    _error: err.message
+                };
+            }
+        }
     }
 }
