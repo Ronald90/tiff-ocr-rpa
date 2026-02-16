@@ -126,7 +126,8 @@ async function processAllPages(tiffPath, numPages) {
  */
 export async function processFile(tiffPath, outputDir) {
     const startTime = Date.now();
-    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const d = new Date();
+    const now = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
     const ext = path.extname(tiffPath);
     const baseName = path.basename(tiffPath, ext);
     const outputPath = path.join(outputDir, `${baseName}_ocr.txt`);
