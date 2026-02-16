@@ -72,9 +72,13 @@ async function processPendingFiles() {
 
             // Verificar si ya fue procesado (por nombre + tamaño + hash parcial)
             const stat = fs.statSync(filePath);
+            const buf = Buffer.alloc(4096);
+            const fd = fs.openSync(filePath, 'r');
+            const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+            fs.closeSync(fd);
             const partialHash = crypto
                 .createHash('md5')
-                .update(fs.readFileSync(filePath, { length: 4096 }))
+                .update(buf.subarray(0, bytesRead))
                 .digest('hex')
                 .substring(0, 8);
             const fileKey = `${filename}::${stat.size}::${partialHash}`;

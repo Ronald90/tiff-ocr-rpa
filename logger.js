@@ -12,7 +12,8 @@ let flushTimer = null;
 const DEBUG_ENABLED = process.env.LOG_DEBUG === 'true';
 
 function timestamp() {
-    return new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
 function isoTimestamp() {
