@@ -9,12 +9,12 @@ const config = {
     model: process.env.OPENAI_MODEL || 'gpt-4o',
 
     // Rendimiento
-    concurrency: parseInt(process.env.CONCURRENCY, 10) || 3,
-    maxRetries: parseInt(process.env.MAX_RETRIES, 10) || 3,
-    retryDelayMs: parseInt(process.env.RETRY_DELAY_MS, 10) || 5000,
+    concurrency: parseInt(process.env.CONCURRENCY, 10) || 2,
+    maxRetries: parseInt(process.env.MAX_RETRIES, 10) || 5,
+    retryDelayMs: parseInt(process.env.RETRY_DELAY_MS, 10) || 10000,
     maxImageWidth: parseInt(process.env.MAX_IMAGE_WIDTH, 10) || 2048,
-    maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 200,
-    timeoutPerPageMs: parseInt(process.env.TIMEOUT_PER_PAGE_MS, 10) || 120000,
+    maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 500,
+    timeoutPerPageMs: parseInt(process.env.TIMEOUT_PER_PAGE_MS, 10) || 180000,
 
     // Carpetas
     inputDir: path.resolve(process.env.INPUT_DIR || './input'),

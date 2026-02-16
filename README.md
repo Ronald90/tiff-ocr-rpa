@@ -72,10 +72,10 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 |---|---|---|
 | `OPENAI_API_KEY` | — | API key de OpenAI (requerida) |
 | `OPENAI_MODEL` | `gpt-4o` | Modelo a usar |
-| `CONCURRENCY` | `3` | Páginas procesadas en paralelo |
-| `MAX_RETRIES` | `3` | Reintentos por página |
-| `MAX_FILE_SIZE_MB` | `200` | Tamaño máximo de archivo |
-| `TIMEOUT_PER_PAGE_MS` | `120000` | Timeout por página (2 min) |
+| `CONCURRENCY` | `2` | Páginas procesadas en paralelo |
+| `MAX_RETRIES` | `5` | Reintentos por página |
+| `MAX_FILE_SIZE_MB` | `500` | Tamaño máximo de archivo |
+| `TIMEOUT_PER_PAGE_MS` | `180000` | Timeout por página (3 min) |
 | `WATCH_INTERVAL_MS` | `5000` | Intervalo de polling del watcher |
 | `MAX_BATCH_SIZE` | `20` | Archivos máximos por ciclo del watcher |
 | `LOG_DEBUG` | `false` | Habilitar logs de nivel DEBUG |
