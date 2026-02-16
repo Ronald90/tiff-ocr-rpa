@@ -41,6 +41,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 ├── .env.example        Plantilla de configuración
 ├── config.js           Configuración centralizada
 ├── openai-client.js    Cliente OpenAI compartido
+├── proxy.js            Proxy corporativo (undici)
 ├── logger.js           Logger con rotación y buffer
 ├── ocr-engine.js       Motor OCR (worker pool + reintentos)
 ├── extractor.js        Extracción JSON con IA
@@ -76,3 +77,26 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | `MAX_FILE_SIZE_MB` | `200` | Tamaño máximo de archivo |
 | `TIMEOUT_PER_PAGE_MS` | `120000` | Timeout por página (2 min) |
 | `WATCH_INTERVAL_MS` | `5000` | Intervalo de polling del watcher |
+| `MAX_BATCH_SIZE` | `20` | Archivos máximos por ciclo del watcher |
+| `LOG_DEBUG` | `false` | Habilitar logs de nivel DEBUG |
+| `HTTPS_PROXY` | — | URL del proxy corporativo (HTTPS) |
+| `HTTP_PROXY` | — | URL del proxy corporativo (HTTP) |
+
+## Proxy Corporativo
+
+Si estás en una red corporativa con proxy, configura las variables de entorno:
+
+```bash
+# En .env o como variable de entorno del sistema
+HTTPS_PROXY=http://proxy.empresa.com:8080
+HTTP_PROXY=http://proxy.empresa.com:8080
+```
+
+El sistema detecta automáticamente estas variables al iniciar y enruta todo el tráfico a OpenAI a través del proxy usando `undici ProxyAgent`.
+
+Al iniciar verás en la consola:
+```
+🌐 Proxy corporativo detectado: http://proxy.empresa.com:8080
+```
+
+Si no hay proxy configurado, el sistema funciona con conexión directa sin cambios.

@@ -29,7 +29,7 @@ async function extractPageAsPng(tiffPath, pageIndex) {
             .resize({ width: config.maxImageWidth, withoutEnlargement: true });
     }
 
-    return pipeline.png().toBuffer();
+    return pipeline.png({ compressionLevel: 6 }).toBuffer();
 }
 
 // ── OCR con GPT-4o ────────────────────────────────────────────────────
@@ -38,10 +38,10 @@ async function ocrWithVision(pngBuffer, pageNum) {
     const imgBase64 = pngBuffer.toString('base64');
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-        try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), config.timeoutPerPageMs);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), config.timeoutPerPageMs);
 
+        try {
             const response = await openai.chat.completions.create({
                 model: config.model,
                 messages: [
@@ -61,8 +61,6 @@ async function ocrWithVision(pngBuffer, pageNum) {
                 temperature: 0.0
             }, { signal: controller.signal });
 
-            clearTimeout(timeout);
-
             return response.choices[0].message.content;
         } catch (err) {
             if (attempt === config.maxRetries) throw err;
@@ -71,6 +69,8 @@ async function ocrWithVision(pngBuffer, pageNum) {
             const waitTime = isRateLimit ? config.retryDelayMs * attempt : config.retryDelayMs;
             logger.warn(`Reintento ${attempt}/${config.maxRetries} para página ${pageNum} (espera ${waitTime / 1000}s)`);
             await sleep(waitTime);
+        } finally {
+            clearTimeout(timeout);
         }
     }
 }

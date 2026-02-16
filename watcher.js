@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import config from './config.js';
 import logger from './logger.js';
 import { processFile } from './ocr-engine.js';
@@ -54,18 +55,29 @@ async function processPendingFiles() {
 
     try {
         const history = loadHistory();
-        const files = fs.readdirSync(config.inputDir).filter(isTiff);
+        const allFiles = fs.readdirSync(config.inputDir).filter(isTiff);
 
-        if (files.length === 0) return;
+        if (allFiles.length === 0) return;
 
-        logger.info(`📂 Encontrados ${files.length} archivo(s) TIFF en input/`);
+        // Limitar batch para no saturar recursos
+        const files = allFiles.slice(0, config.maxBatchSize);
+        if (allFiles.length > config.maxBatchSize) {
+            logger.warn(`📂 ${allFiles.length} archivo(s) encontrados, procesando lote de ${config.maxBatchSize}`);
+        } else {
+            logger.info(`📂 Encontrados ${files.length} archivo(s) TIFF en input/`);
+        }
 
         for (const filename of files) {
             const filePath = path.join(config.inputDir, filename);
 
-            // Verificar si ya fue procesado (por nombre + tamaño)
+            // Verificar si ya fue procesado (por nombre + tamaño + hash parcial)
             const stat = fs.statSync(filePath);
-            const fileKey = `${filename}::${stat.size}`;
+            const partialHash = crypto
+                .createHash('md5')
+                .update(fs.readFileSync(filePath, { length: 4096 }))
+                .digest('hex')
+                .substring(0, 8);
+            const fileKey = `${filename}::${stat.size}::${partialHash}`;
 
             if (history[fileKey]) {
                 logger.warn(`Saltando ${filename} (ya procesado el ${history[fileKey].date})`);

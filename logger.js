@@ -8,8 +8,15 @@ const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB
 let writeBuffer = [];
 let flushTimer = null;
 
+// Nivel de debug controlado por variable de entorno
+const DEBUG_ENABLED = process.env.LOG_DEBUG === 'true';
+
 function timestamp() {
     return new Date().toISOString().replace('T', ' ').substring(0, 19);
+}
+
+function isoTimestamp() {
+    return new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
 }
 
 function rotateIfNeeded() {
@@ -17,7 +24,7 @@ function rotateIfNeeded() {
         if (fs.existsSync(LOG_FILE)) {
             const stat = fs.statSync(LOG_FILE);
             if (stat.size > MAX_LOG_SIZE) {
-                const rotated = LOG_FILE.replace('.log', `_${Date.now()}.log`);
+                const rotated = LOG_FILE.replace('.log', `_${isoTimestamp()}.log`);
                 fs.renameSync(LOG_FILE, rotated);
             }
         }
@@ -60,6 +67,7 @@ const logger = {
     success: (msg) => write('OK', msg),
     warn: (msg) => write('WARN', msg),
     error: (msg) => write('ERROR', msg),
+    debug: (msg) => { if (DEBUG_ENABLED) write('DEBUG', msg); },
     separator: () => write('INFO', '─'.repeat(50)),
     flush: flushBuffer,
 };

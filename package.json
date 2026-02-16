@@ -6,11 +6,18 @@
   "type": "module",
   "scripts": {
     "start": "node main.js",
-    "watch": "node watcher.js"
+    "watch": "node watcher.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "dotenv": "^16.4.0",
     "openai": "^4.0.0",
-    "sharp": "^0.33.0"
+    "sharp": "^0.33.0",
+    "undici": "^7.22.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0"
   }
 }

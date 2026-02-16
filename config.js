@@ -9,12 +9,12 @@ const config = {
     model: process.env.OPENAI_MODEL || 'gpt-4o',
 
     // Rendimiento
-    concurrency: parseInt(process.env.CONCURRENCY) || 3,
-    maxRetries: parseInt(process.env.MAX_RETRIES) || 3,
-    retryDelayMs: parseInt(process.env.RETRY_DELAY_MS) || 5000,
-    maxImageWidth: parseInt(process.env.MAX_IMAGE_WIDTH) || 2048,
-    maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB) || 200,
-    timeoutPerPageMs: parseInt(process.env.TIMEOUT_PER_PAGE_MS) || 120000,
+    concurrency: parseInt(process.env.CONCURRENCY, 10) || 3,
+    maxRetries: parseInt(process.env.MAX_RETRIES, 10) || 3,
+    retryDelayMs: parseInt(process.env.RETRY_DELAY_MS, 10) || 5000,
+    maxImageWidth: parseInt(process.env.MAX_IMAGE_WIDTH, 10) || 2048,
+    maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 200,
+    timeoutPerPageMs: parseInt(process.env.TIMEOUT_PER_PAGE_MS, 10) || 120000,
 
     // Carpetas
     inputDir: path.resolve(process.env.INPUT_DIR || './input'),
@@ -23,7 +23,10 @@ const config = {
     errorDir: path.resolve(process.env.ERROR_DIR || './error'),
 
     // Watcher
-    watchIntervalMs: parseInt(process.env.WATCH_INTERVAL_MS) || 5000,
+    watchIntervalMs: parseInt(process.env.WATCH_INTERVAL_MS, 10) || 5000,
+
+    // Watcher batch
+    maxBatchSize: parseInt(process.env.MAX_BATCH_SIZE, 10) || 20,
 };
 
 // Validaciones
