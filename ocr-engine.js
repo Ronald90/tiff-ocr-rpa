@@ -64,7 +64,8 @@ REGLAS ESTRICTAS:
 8. Las tablas deben mantenerse con su estructura usando espacios o tabulaciones.
 9. Si el texto es parcialmente ilegible, transcribe lo que sea legible y usa [ilegible] solo para las partes que realmente no se pueden leer.
 10. NO corrijas ortografía ni gramática del documento original. Transcribe tal cual.
-11. El resultado debe empezar directamente con el primer texto visible de la imagen y terminar con el último.`
+11. El resultado debe empezar directamente con el primer texto visible de la imagen y terminar con el último.
+12. SIEMPRE responde en español. Nunca respondas en inglés ni en otro idioma.`
                     },
                     {
                         role: 'user',
@@ -83,27 +84,51 @@ REGLAS ESTRICTAS:
             // Detectar rechazos del modelo (gpt-4o a veces se niega con documentos legales)
             const refusalPatterns = [
                 'no puedo ayudar',
-                'i can\'t assist',
-                'i cannot assist',
                 'no puedo procesar',
                 'lo siento',
-                'i\'m sorry',
-                'i am sorry',
                 'no es posible',
-                'not able to',
-                'unable to assist',
-                'no me es posible'
+                'no me es posible',
+                'no estoy en condiciones',
+                'no puedo realizar',
+                'no puedo completar',
+                'no puedo asistir',
+                'disculpa',
+                'lamento no poder'
             ];
             const textLower = text.toLowerCase().trim();
             const isRefusal = refusalPatterns.some(p => textLower.includes(p)) && text.length < 200;
 
             if (isRefusal) {
-                logger.warn(`[REFUSAL] Modelo se negó a transcribir página ${pageNum} (intento ${attempt}/${config.maxRetries}): "${text.substring(0, 80)}..."`);
-                if (attempt === config.maxRetries) {
-                    throw new Error(`Modelo rechazó transcribir página ${pageNum} después de ${config.maxRetries} intentos`);
+                logger.warn(`[REFUSAL] Modelo ${config.model} se negó en página ${pageNum}. Reintentando con gpt-4o-mini...`);
+
+                // Fallback automático a gpt-4o-mini para páginas rechazadas
+                try {
+                    const fallbackResponse = await openai.chat.completions.create({
+                        model: 'gpt-4o-mini',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `Eres un motor de OCR de alta precisión. Transcribe exactamente el texto visible en la imagen. Devuelve SOLO el texto transcrito, sin comentarios ni explicaciones. Mantén el formato original. SIEMPRE responde en español.`
+                            },
+                            {
+                                role: 'user',
+                                content: [
+                                    { type: 'text', text: `Transcribe literalmente todo el texto visible en esta imagen (página ${pageNum}). Devuelve SOLO la transcripción.` },
+                                    { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                                ]
+                            }
+                        ],
+                        max_tokens: 4096,
+                        temperature: 0.0
+                    });
+
+                    const fallbackText = fallbackResponse.choices[0].message.content;
+                    logger.info(`[FALLBACK] Página ${pageNum} transcrita con gpt-4o-mini correctamente`);
+                    return fallbackText;
+                } catch (fallbackErr) {
+                    logger.error(`[FALLBACK] Error con gpt-4o-mini en página ${pageNum}: ${fallbackErr.message}`);
+                    throw fallbackErr;
                 }
-                await sleep(config.retryDelayMs);
-                continue;
             }
 
             return text;
