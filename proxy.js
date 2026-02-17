@@ -10,7 +10,7 @@ const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 let proxyFetch = undefined;
 
 if (proxyUrl) {
-    logger.info(`🌐 Proxy corporativo detectado: ${proxyUrl}`);
+    logger.info(`[PROXY] Proxy corporativo detectado: ${proxyUrl}`);
 
     const agent = new ProxyAgent({
         uri: proxyUrl,
@@ -22,7 +22,7 @@ if (proxyUrl) {
         return undiciFetch(url, { ...init, dispatcher: agent });
     };
 } else {
-    logger.debug('⚠️  No se detectó proxy (HTTPS_PROXY / HTTP_PROXY). Conexión directa.');
+    logger.debug('[PROXY] No se detectó proxy (HTTPS_PROXY / HTTP_PROXY). Conexión directa.');
 }
 
 export default proxyFetch;

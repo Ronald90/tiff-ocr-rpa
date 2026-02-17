@@ -26,7 +26,10 @@ const config = {
     watchIntervalMs: parseInt(process.env.WATCH_INTERVAL_MS, 10) || 5000,
 
     // Watcher batch
-    maxBatchSize: parseInt(process.env.MAX_BATCH_SIZE, 10) || 20,
+    maxBatchSize: parseInt(process.env.MAX_BATCH_SIZE, 10) || 50,
+
+    // Procesamiento paralelo de archivos
+    fileConcurrency: parseInt(process.env.FILE_CONCURRENCY, 10) || 3,
 };
 
 // Validaciones

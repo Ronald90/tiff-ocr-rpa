@@ -1,11 +1,11 @@
 # TIFF OCR RPA
 
-Sistema RPA para procesar archivos TIFF multipágina mediante OCR con GPT-4o Vision y extracción automática de datos estructurados en JSON.
+Sistema RPA para procesar archivos TIFF multipágina mediante OCR con GPT-4o-mini Vision y extracción automática de datos estructurados en JSON.
 
 ## Requisitos
 
 - Node.js 18+
-- API key de OpenAI con acceso a GPT-4o
+- API key de OpenAI con acceso a GPT-4o / GPT-4o-mini
 
 ## Instalación
 
@@ -42,7 +42,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 ├── config.js           Configuración centralizada
 ├── openai-client.js    Cliente OpenAI compartido
 ├── proxy.js            Proxy corporativo (undici)
-├── logger.js           Logger con rotación y buffer
+├── logger.js           Logger async con rotación y stream
 ├── ocr-engine.js       Motor OCR (worker pool + reintentos)
 ├── extractor.js        Extracción JSON con IA
 ├── main.js             CLI
@@ -57,8 +57,9 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `tipo_documento` | string | Tipo de documento (Circular, Carta Circular, Nota, etc.) |
-| `numero_documento` | string | Código identificador del documento |
+| `tipo_documento` | string | Clasificación del documento (Circular, Carta Circular, Nota, etc.) |
+| `documento` | string | Línea identificadora completa del documento |
+| `ciudad` | string | Ciudad de emisión |
 | `departamento` | string | Departamento de Bolivia |
 | `fecha` | string | Fecha en formato YYYY-MM-DD |
 | `destinatario` | string | A quién va dirigido |
@@ -72,13 +73,15 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | Variable | Default | Descripción |
 |---|---|---|
 | `OPENAI_API_KEY` | — | API key de OpenAI (requerida) |
-| `OPENAI_MODEL` | `gpt-4o` | Modelo a usar |
-| `CONCURRENCY` | `2` | Páginas procesadas en paralelo |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Modelo a usar |
+| `CONCURRENCY` | `5` | Páginas procesadas en paralelo por archivo |
+| `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Reintentos por página |
+| `MAX_IMAGE_WIDTH` | `1500` | Ancho máximo de imagen en px (redimensionamiento) |
 | `MAX_FILE_SIZE_MB` | `500` | Tamaño máximo de archivo |
 | `TIMEOUT_PER_PAGE_MS` | `180000` | Timeout por página (3 min) |
-| `WATCH_INTERVAL_MS` | `5000` | Intervalo de polling del watcher |
-| `MAX_BATCH_SIZE` | `20` | Archivos máximos por ciclo del watcher |
+| `WATCH_INTERVAL_MS` | `2000` | Intervalo de polling del watcher |
+| `MAX_BATCH_SIZE` | `50` | Archivos máximos por ciclo del watcher |
 | `LOG_DEBUG` | `false` | Habilitar logs de nivel DEBUG |
 | `HTTPS_PROXY` | — | URL del proxy corporativo (HTTPS) |
 | `HTTP_PROXY` | — | URL del proxy corporativo (HTTP) |
@@ -97,7 +100,7 @@ El sistema detecta automáticamente estas variables al iniciar y enruta todo el 
 
 Al iniciar verás en la consola:
 ```
-🌐 Proxy corporativo detectado: http://proxy.empresa.com:8080
+[PROXY] Proxy corporativo detectado: http://proxy.empresa.com:8080
 ```
 
 Si no hay proxy configurado, el sistema funciona con conexión directa sin cambios.

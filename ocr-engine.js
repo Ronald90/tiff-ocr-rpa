@@ -47,12 +47,26 @@ async function ocrWithVision(pngBuffer, pageNum) {
                 messages: [
                     {
                         role: 'system',
-                        content: 'Eres un sistema de OCR profesional. Tu tarea es extraer TODO el texto visible en la imagen, manteniendo el formato original lo más fielmente posible. Incluye encabezados, párrafos, tablas, números, y cualquier texto visible. No agregues comentarios ni explicaciones, solo devuelve el texto extraído tal cual aparece en el documento.'
+                        content: `Eres un motor de OCR (Reconocimiento Óptico de Caracteres) de alta precisión especializado en documentos regulatorios del sistema financiero de Bolivia.
+
+TU ÚNICA FUNCIÓN: Transcribir exactamente el texto visible en la imagen. Eres una máquina de transcripción, NO un asistente.
+
+REGLAS ESTRICTAS:
+1. Devuelve ÚNICAMENTE el texto transcrito. Nada más.
+2. NUNCA agregues comentarios, explicaciones, resúmenes, notas, encabezados propios, ni texto que no esté en la imagen.
+3. NUNCA escribas frases como "El documento contiene...", "A continuación...", "Se puede observar...", "Texto extraído:", etc.
+4. Mantén el formato original: saltos de línea, espaciado, indentación, numeración y viñetas.
+5. Transcribe TODOS los elementos visibles: encabezados, códigos (ej: ASFI/DAJ/CJ-8000/2025), fechas, párrafos, tablas, listas numeradas, firmas, sellos textuales y pies de página.
+6. Los códigos de documento como "CARTA CIRCULAR/ASFI/DAJ/CCA-11244/2025" o "ASFI/DAJ/CJ-8058/2025" deben transcribirse EXACTAMENTE como aparecen, sin modificar barras, guiones ni números.
+7. Las tablas deben mantenerse con su estructura usando espacios o tabulaciones.
+8. Si el texto es parcialmente ilegible, transcribe lo que sea legible y usa [ilegible] solo para las partes que realmente no se pueden leer.
+9. NO corrijas ortografía ni gramática del documento original. Transcribe tal cual.
+10. El resultado debe empezar directamente con el primer texto visible de la imagen y terminar con el último.`
                     },
                     {
                         role: 'user',
                         content: [
-                            { type: 'text', text: `Extrae todo el texto de esta imagen de documento (página ${pageNum}). Devuelve SOLO el texto, sin comentarios adicionales.` },
+                            { type: 'text', text: `Transcribe todo el texto visible en esta imagen (página ${pageNum}). Devuelve SOLO la transcripción literal, sin agregar ningún comentario, título ni explicación. Empieza directamente con el texto del documento.` },
                             { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
                         ]
                     }
@@ -86,10 +100,10 @@ async function processPage(tiffPath, pageIndex, numPages) {
         const sizeKB = (pngBuffer.length / 1024).toFixed(1);
         const ocrText = await ocrWithVision(pngBuffer, pageNum);
 
-        logger.info(`  ✅ Página ${pageNum}/${numPages} (${sizeKB} KB)`);
+        logger.info(`  [PAGE] Página ${pageNum}/${numPages} (${sizeKB} KB)`);
         return { success: true, pageNum, text: ocrText };
     } catch (err) {
-        logger.error(`  ❌ Página ${pageNum}/${numPages}: ${err.message}`);
+        logger.error(`  [ERROR] Página ${pageNum}/${numPages}: ${err.message}`);
         return { success: false, pageNum, text: `[ERROR] Página ${pageNum}: ${err.message}` };
     }
 }
@@ -203,7 +217,7 @@ export async function processFile(tiffPath, outputDir) {
     };
 
     fs.writeFileSync(jsonPath, JSON.stringify(jsonOutput, null, 2), 'utf-8');
-    logger.success(`📄 JSON guardado: ${path.basename(jsonPath)}`);
+    logger.success(`[JSON] JSON guardado: ${path.basename(jsonPath)}`);
     logger.success(`Completado: ${path.basename(tiffPath)} (${elapsedStr})`);
 
     return { outputPath, jsonPath, numPages, success: successCount, errors: errorCount, elapsed: elapsedStr, extractedData: jsonOutput };

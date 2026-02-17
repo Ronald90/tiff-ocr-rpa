@@ -1,7 +1,7 @@
 {
   "name": "tiff-ocr-rpa",
   "version": "2.0.0",
-  "description": "RPA para OCR de archivos TIFF multipágina usando GPT-4o Vision",
+  "description": "RPA para OCR de archivos TIFF multipágina usando GPT-4o-mini Vision",
   "main": "main.js",
   "type": "module",
   "scripts": {

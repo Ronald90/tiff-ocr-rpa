@@ -12,6 +12,7 @@ output/
 processed/
 error/
 .processed_history.json
+.processed_history.jsonl
 
 # Archivos TIFF (datos de entrada)
 input/*.tif

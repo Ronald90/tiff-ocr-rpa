@@ -38,7 +38,7 @@ try {
     console.log(`     TXT: ${result.outputPath}`);
     console.log(`     JSON: ${result.jsonPath}`);
     console.log('='.repeat(60));
-    console.log('\n📋 Datos extraídos:');
+    console.log('\n[DATA] Datos extraídos:');
     console.log(JSON.stringify(result.extractedData, null, 2));
 } catch (err) {
     logger.error(`Error fatal: ${err.message}`);

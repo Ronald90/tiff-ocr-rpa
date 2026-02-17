@@ -4,9 +4,8 @@ import path from 'path';
 const LOG_FILE = path.resolve('./rpa.log');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB
 
-// Buffer para escritura eficiente
-let writeBuffer = [];
-let flushTimer = null;
+// Stream de escritura
+let logStream = null;
 
 // Nivel de debug controlado por variable de entorno
 const DEBUG_ENABLED = process.env.LOG_DEBUG === 'true';
@@ -25,43 +24,53 @@ function rotateIfNeeded() {
         if (fs.existsSync(LOG_FILE)) {
             const stat = fs.statSync(LOG_FILE);
             if (stat.size > MAX_LOG_SIZE) {
+                // Cerrar stream actual síncronamente antes de rotar
+                if (logStream) {
+                    logStream.end();
+                    logStream = null;
+                }
                 const rotated = LOG_FILE.replace('.log', `_${isoTimestamp()}.log`);
                 fs.renameSync(LOG_FILE, rotated);
             }
         }
-    } catch { /* ignore rotation errors */ }
+    } catch (err) {
+        console.error('Error rotando logs:', err.message);
+    }
 }
 
-function flushBuffer() {
-    if (writeBuffer.length === 0) return;
-    const content = writeBuffer.join('\n') + '\n';
-    writeBuffer = [];
-    try {
-        fs.appendFileSync(LOG_FILE, content);
-    } catch { /* ignore write errors */ }
+function initStream() {
+    if (!logStream) {
+        // Flags: 'a' = append
+        logStream = fs.createWriteStream(LOG_FILE, { flags: 'a', encoding: 'utf8' });
+
+        logStream.on('error', (err) => {
+            console.error('Error escritura log:', err);
+        });
+    }
 }
 
 function write(level, message) {
     const line = `[${timestamp()}] [${level}] ${message}`;
     console.log(line);
-    writeBuffer.push(line);
 
-    // Flush cada 500ms o cuando hay 20+ líneas
-    if (writeBuffer.length >= 20) {
-        flushBuffer();
-    } else if (!flushTimer) {
-        flushTimer = setTimeout(() => {
-            flushBuffer();
-            flushTimer = null;
-        }, 500);
-    }
+    // Asegurar que el stream esté listo
+    if (!logStream) initStream();
+
+    const written = logStream.write(line + '\n');
+
+    // Si el buffer interno está lleno, podríamos esperar 'drain', 
+    // pero para logs generalmente seguimos escribiendo o dejamos 
+    // que Node maneje el backpressure (buffer en memoria).
 }
-
-// Flush al salir
-process.on('exit', flushBuffer);
 
 // Rotar log al iniciar si es necesario
 rotateIfNeeded();
+initStream();
+
+// Cierre limpio
+process.on('exit', () => {
+    if (logStream) logStream.end();
+});
 
 const logger = {
     info: (msg) => write('INFO', msg),
@@ -70,7 +79,6 @@ const logger = {
     error: (msg) => write('ERROR', msg),
     debug: (msg) => { if (DEBUG_ENABLED) write('DEBUG', msg); },
     separator: () => write('INFO', '─'.repeat(50)),
-    flush: flushBuffer,
 };
 
 export default logger;
