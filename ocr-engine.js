@@ -81,22 +81,9 @@ REGLAS ESTRICTAS:
 
             const text = response.choices[0].message.content;
 
-            // Detectar rechazos del modelo (gpt-4o a veces se niega con documentos legales)
-            const refusalPatterns = [
-                'no puedo ayudar',
-                'no puedo procesar',
-                'lo siento',
-                'no es posible',
-                'no me es posible',
-                'no estoy en condiciones',
-                'no puedo realizar',
-                'no puedo completar',
-                'no puedo asistir',
-                'disculpa',
-                'lamento no poder'
-            ];
+            // Detectar rechazos del modelo
             const textLower = text.toLowerCase().trim();
-            const isRefusal = refusalPatterns.some(p => textLower.includes(p)) && text.length < 200;
+            const isRefusal = text.length < 200 && (textLower.includes('no puedo') || textLower.includes('lo siento'));
 
             if (isRefusal) {
                 logger.warn(`[REFUSAL] Modelo ${config.model} se negó en página ${pageNum}. Reintentando con gpt-4o-mini...`);
