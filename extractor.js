@@ -27,8 +27,8 @@ Los documentos ASFI siguen esta estructura general en su encabezado:
   [DESCRIPCIÓN DE LA REFERENCIA]
 
   Se adjunta(n) el (los) documento(s) que se detalla(n) a continuación:
-  1. R-XXXXXX DE DD DE MES DE YYYY
-  2. R-XXXXXX DE DD DE MES DE YYYY
+  1. R-XXXXXX ...
+  2. R-XXXXXX ...
   ...
 
 ═══════════════════════════════════════════
@@ -38,6 +38,7 @@ CAMPOS A EXTRAER
 {
   "tipo_documento": "string — Clasificación del documento (ver reglas abajo)",
   "documento": "string — Línea identificadora completa tal cual aparece en el encabezado",
+  "denominacion": "string — Código del área/departamento de ASFI (ver reglas abajo)",
   "ciudad": "string — Ciudad de emisión",
   "departamento": "string — Departamento de Bolivia correspondiente a la ciudad",
   "fecha": "string — Fecha en formato ISO YYYY-MM-DD",
@@ -63,36 +64,54 @@ EJEMPLOS CONCRETOS (entrada → salida esperada):
 1. Línea: "CARTA CIRCULAR/ASFI/DAJ/CCA-11244/2025"
    → tipo_documento: "CARTA CIRCULAR"
    → documento: "CARTA CIRCULAR/ASFI/DAJ/CCA-11244/2025"
+   → denominacion: "DAJ"
 
 2. Línea: "CARTA CIRCULAR/ASFI/DCF/CCA-10552/2025"
    → tipo_documento: "CARTA CIRCULAR"
    → documento: "CARTA CIRCULAR/ASFI/DCF/CCA-10552/2025"
+   → denominacion: "DCF"
 
 3. Línea: "CARTA CIRCULAR/ASFI/DAJ/CC-3710/2025"
    → tipo_documento: "CARTA CIRCULAR"
    → documento: "CARTA CIRCULAR/ASFI/DAJ/CC-3710/2025"
+   → denominacion: "DAJ"
 
 4. Línea: "ASFI/DAJ/CJ-8000/2025" + Título en el cuerpo: "NOTA DE REMISIÓN DE ORDEN JUDICIAL"
    → tipo_documento: "NOTA DE REMISIÓN DE ORDEN JUDICIAL"
    → documento: "ASFI/DAJ/CJ-8000/2025"
+   → denominacion: "DAJ"
 
 5. Línea: "ASFI/DAJ/CJ-8058/2025" + Título: "NOTA DE REMISIÓN DE ORDEN JUDICIAL"
    → tipo_documento: "NOTA DE REMISIÓN DE ORDEN JUDICIAL"
    → documento: "ASFI/DAJ/CJ-8058/2025"
+   → denominacion: "DAJ"
 
-6. Línea: "CIRCULAR/ASFI/XXX/C-1234/2025"
+6. Línea: "CIRCULAR/ASFI/DEP/C-1234/2025"
    → tipo_documento: "CIRCULAR"
-   → documento: "CIRCULAR/ASFI/XXX/C-1234/2025"
+   → documento: "CIRCULAR/ASFI/DEP/C-1234/2025"
+   → denominacion: "DEP"
 
-7. Línea: "ASFI/XXX/R-5678/2025" + Título: "RESOLUCIÓN ADMINISTRATIVA"
+7. Línea: "ASFI/DCF/R-5678/2025" + Título: "RESOLUCIÓN ADMINISTRATIVA"
    → tipo_documento: "RESOLUCIÓN ADMINISTRATIVA"
-   → documento: "ASFI/XXX/R-5678/2025"
+   → documento: "ASFI/DCF/R-5678/2025"
+   → denominacion: "DCF"
 
 PROHIBICIONES para tipo_documento:
 - NUNCA incluyas códigos como "ASFI/DAJ/CJ-8000/2025" en tipo_documento.
 - NUNCA incluyas números, barras "/" ni códigos alfanuméricos.
 - NUNCA repitas el contenido de documento en tipo_documento.
 - tipo_documento debe ser SOLO texto descriptivo (ej: "CARTA CIRCULAR", "NOTA DE REMISIÓN DE ORDEN JUDICIAL", "CIRCULAR", "RESOLUCIÓN ADMINISTRATIVA", "INSTRUCTIVO").
+
+DENOMINACIÓN:
+- Es el código que aparece en la línea identificadora INMEDIATAMENTE DESPUÉS de "ASFI/" y ANTES del siguiente "/".
+- Patrón: ASFI/****/  →  lo que esté en **** es la denominación.
+- Puede ser CUALQUIER código (DAJ, DEP, DCF, DER, DNP, o cualquier otro que exista). NO te limites a códigos conocidos.
+- Ejemplos:
+  "CARTA CIRCULAR/ASFI/DAJ/CCA-11244/2025" → denominacion: "DAJ"
+  "ASFI/DEP/CC-3371/2025" → denominacion: "DEP"
+  "CIRCULAR/ASFI/DCF/C-1234/2025" → denominacion: "DCF"
+  "ASFI/XYZ/R-5678/2025" → denominacion: "XYZ"
+- Si no se puede identificar el patrón ASFI/____/, devuelve "".
 
 ═══════════════════════════════════════════
 REGLAS PARA OTROS CAMPOS
@@ -127,10 +146,8 @@ PARA_CONOCIMIENTO:
 - Si no existe, devuelve [].
 
 DOCUMENTOS_ADJUNTOS:
-- Busca listas numeradas después de "Se adjunta(n) el (los) documento(s)..." o similar.
-- Cada documento adjunto suele tener formato "R-XXXXXX DE DD DE MES DE YYYY".
-- Extrae cada uno como string del array.
-- Ejemplo: ["R-250439 DE 29 DE OCTUBRE DE 2025", "R-248533 DE 28 DE OCTUBRE DE 2025"]
+- Busca listas numeradas después de "Se adjunta(n) el (los) documento(s)..." o texto similar.
+- COPIA cada línea EXACTAMENTE como aparece en el texto, carácter por carácter. NO modifiques ni un solo dígito.
 - Si no existen, devuelve [].
 
 ═══════════════════════════════════════════
@@ -198,6 +215,7 @@ export async function extractFields(ocrText) {
                 return {
                     tipo_documento: '',
                     documento: '',
+                    denominacion: '',
                     ciudad: '',
                     departamento: '',
                     fecha: '',
