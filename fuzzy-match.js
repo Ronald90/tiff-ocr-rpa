@@ -82,8 +82,34 @@ export function findBestMatchInText(query, text) {
  * Ejemplo: "R-241594 DE 20 DE OCTUBRE DE 2025" → "R-241594"
  */
 export function extractDocCode(docText) {
-    const match = docText.match(/([A-Z0-9]+-[A-Z0-9]+)/i);
-    return match ? match[1] : docText.split(' ')[0];
+    if (!docText) return null;
+
+    const match = docText.match(/R-\d+/i);
+    if (match) return match[0].toUpperCase();
+
+    // Fallback: buscar patrón genérico LETRA-NÚMERO
+    const fallback = docText.match(/([A-Z0-9]+-[A-Z0-9]+)/i);
+    return fallback ? fallback[1] : null;
+}
+
+/**
+ * Extrae todos los códigos R-XXXXXX encontrados en un texto.
+ * Útil para escanear una página completa y encontrar múltiples códigos.
+ * @param {string} text — Texto donde buscar
+ * @returns {string[]} — Array de códigos únicos encontrados (ej: ["R-263056", "R-264273"])
+ */
+export function extractRCodes(text) {
+    if (!text) return [];
+
+    const regex = /R\s*[-.]?\s*(\d{5,7})/gi;
+    const codes = [];
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+        codes.push(`R-${match[1]}`);
+    }
+
+    return [...new Set(codes)];
 }
 
 /**
@@ -98,7 +124,17 @@ export function matchSingleNumber(identifiedNumber, documentList) {
         return { matched: false, documento: null, code: null, score: 0 };
     }
 
-    const cleanIdentified = normalize(identifiedNumber);
+    // Pre-normalizar el código identificado: convertir prefijos manuscritos comunes a R-
+    let normalizedIdentified = identifiedNumber.trim();
+    // Reemplazar prefijos confusos: "12-", "22-", "P-", "K-", "B-", "h-" → "R-"
+    normalizedIdentified = normalizedIdentified.replace(/^[12]{1,2}\s*[-–—.]\s*/i, 'R-');
+    normalizedIdentified = normalizedIdentified.replace(/^[PpKkBbHh]\s*[-–—.]\s*/, 'R-');
+
+    // Comparar tanto con el original como con el normalizado
+    const variants = [normalize(normalizedIdentified), normalize(identifiedNumber)];
+    // Eliminar duplicados
+    const uniqueVariants = [...new Set(variants)];
+
     let bestScore = 0;
     let bestDoc = null;
     let bestCode = null;
@@ -107,15 +143,17 @@ export function matchSingleNumber(identifiedNumber, documentList) {
         const code = extractDocCode(doc);
         const cleanCode = normalize(code);
 
-        // Comparación directa con Levenshtein
-        const dist = levenshteinDistance(cleanIdentified, cleanCode);
-        const maxLen = Math.max(cleanIdentified.length, cleanCode.length);
-        const score = maxLen === 0 ? 0 : Math.max(0, 1 - (dist / maxLen));
+        for (const cleanIdentified of uniqueVariants) {
+            // Comparación directa con Levenshtein
+            const dist = levenshteinDistance(cleanIdentified, cleanCode);
+            const maxLen = Math.max(cleanIdentified.length, cleanCode.length);
+            const score = maxLen === 0 ? 0 : Math.max(0, 1 - (dist / maxLen));
 
-        if (score > bestScore) {
-            bestScore = score;
-            bestDoc = doc;
-            bestCode = code;
+            if (score > bestScore) {
+                bestScore = score;
+                bestDoc = doc;
+                bestCode = code;
+            }
         }
     }
 
@@ -157,4 +195,30 @@ export function findDocumentsInPages(documentTexts, pagesText) {
     }
 
     return results;
+}
+
+/**
+ * Busca qué documento de la lista corresponde al texto de una página.
+ * Extrae códigos R-XXXXXX del texto y los compara con fuzzy matching.
+ * @param {string} pageText — Texto OCR de la página
+ * @param {string[]} documentList — Lista de documentos adjuntos pendientes
+ * @returns {{ matched: boolean, documento: string|null, code: string|null, score: number }}
+ */
+export function matchPageWithDocuments(pageText, documentList) {
+    const codesFound = extractRCodes(pageText);
+
+    if (codesFound.length === 0) {
+        return { matched: false, documento: null, code: null, score: 0 };
+    }
+
+    let bestResult = { matched: false, documento: null, code: null, score: 0 };
+
+    for (const code of codesFound) {
+        const result = matchSingleNumber(code, documentList);
+        if (result.matched && result.score > bestResult.score) {
+            bestResult = result;
+        }
+    }
+
+    return bestResult;
 }

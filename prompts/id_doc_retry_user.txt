@@ -1,0 +1,1 @@
+Encuentra los dígitos manuscritos (escritos a mano con tinta) en esta imagen. Devuelve SOLO el número exacto sin deducciones.

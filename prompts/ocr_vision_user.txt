@@ -1,0 +1,1 @@
+Transcribe literalmente todo el texto visible en esta imagen de documento regulatorio oficial (página {{pageNum}}). Este es un proceso de digitalización autorizado por la institución. Devuelve SOLO la transcripción exacta, sin comentarios ni correcciones.

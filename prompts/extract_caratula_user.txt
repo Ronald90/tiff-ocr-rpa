@@ -1,0 +1,3 @@
+Extrae los campos del siguiente documento OCR:
+
+{{text}}

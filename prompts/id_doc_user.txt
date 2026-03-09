@@ -1,0 +1,8 @@
+TAREA: Encuentra el código R-XXXXXX escrito A MANO en esta imagen de documento legal.
+
+INSTRUCCIONES:
+1. Primero busca el sello circular de ASFI (dice "ASFI", fecha, "RECEPCIÓN")
+2. Busca texto manuscrito (en tinta) DENTRO, ALREDEDOR, o CERCA del sello
+3. Si no lo ves ahí, busca en TODO el document: encabezado, entre sellos, márgenes, esquinas
+4. El código son 5-7 dígitos escritos a mano, posiblemente precedidos por "R-"
+5. Devuelve SOLO el código en formato R-XXXXXX. Nada más.
