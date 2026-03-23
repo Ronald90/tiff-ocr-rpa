@@ -4,7 +4,13 @@ import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
 
+
+
+
 const MAX_EXTRACT_CHARS = 8000;
+
+
+
 
 const EMPTY_RESULT = {
     tipo_documento: '',
@@ -17,12 +23,19 @@ const EMPTY_RESULT = {
     referencia: '',
     numero_tramite: '',
     para_conocimiento: [],
-    documentos_adjuntos: []
+    documentos_adjuntos: [],
+    modificaciones: []
 };
+
+
+
 
 // Cargar prompts desde archivos externos
 const EXTRACTION_PROMPT = fs.readFileSync(path.resolve('./prompts/extract_caratula.txt'), 'utf-8');
 const EXTRACTION_USER_PROMPT = fs.readFileSync(path.resolve('./prompts/extract_caratula_user.txt'), 'utf-8');
+
+
+
 
 /**
  * Reemplaza marcadores {{variable}} en un template de prompt.
@@ -36,130 +49,25 @@ function renderPrompt(template, vars = {}) {
 }
 
 
+
+
+
+
+
+
 /**
  * Garantiza que el resultado tenga todos los campos esperados
  */
 function normalizeResult(data) {
-    const result = { ...EMPTY_RESULT };
+    if (!data) return EMPTY_RESULT;
+    
+    // Asegurarse de que campos de listas sean arrays
+    const listFields = ['para_conocimiento', 'documentos_adjuntos', 'modificaciones'];
+    listFields.forEach(field => {
+        if (!data[field]) data[field] = [];
+        if (typeof data[field] === 'string') data[field] = [data[field]];
+    });
 
-    if (!data || typeof data !== 'object') {
-        return result;
-    }
-
-    for (const key of Object.keys(result)) {
-        if (data[key] !== undefined && data[key] !== null) {
-            result[key] = data[key];
-        }
-    }
-
-    if (!Array.isArray(result.para_conocimiento)) {
-        result.para_conocimiento = [];
-    }
-
-    if (!Array.isArray(result.documentos_adjuntos)) {
-        result.documentos_adjuntos = [];
-    }
-
-    return result;
+    return { ...EMPTY_RESULT, ...data };
 }
 
-
-/**
- * Extrae JSON incluso si el modelo devuelve texto extra
- */
-function safeJsonParse(text) {
-    try {
-        return JSON.parse(text);
-    } catch {
-        const match = text.match(/\{[\s\S]*\}/);
-        if (match) {
-            try {
-                return JSON.parse(match[0]);
-            } catch {
-                return null;
-            }
-        }
-        return null;
-    }
-}
-
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
-/**
- * Extrae campos estructurados del texto OCR usando GPT-4o.
- * Solo envia las primeras paginas para ahorrar tokens,
- * ya que los metadatos del documento siempre estan al inicio.
- * @param {string} ocrText - Texto completo del OCR
- * @returns {object} - Campos extraidos
- */
-export async function extractFields(ocrText) {
-    const truncated =
-        ocrText.length > MAX_EXTRACT_CHARS
-            ? ocrText.substring(0, MAX_EXTRACT_CHARS) +
-            '\n\n[... texto restante omitido ...]'
-            : ocrText;
-
-    logger.info(
-        `[EXTRACT] Procesando documento (${truncated.length} chars de ${ocrText.length} total)`
-    );
-
-    for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-        try {
-            const response = await openai.chat.completions.create({
-                model: config.model,
-                temperature: 0,
-                max_tokens: 800,
-                response_format: { type: 'json_object' },
-                messages: [
-                    {
-                        role: 'system',
-                        content: EXTRACTION_PROMPT
-                    },
-                    {
-                        role: 'user',
-                        content: renderPrompt(EXTRACTION_USER_PROMPT, { text: truncated })
-                    }
-                ]
-            });
-
-            const raw = response.choices[0].message.content.trim();
-            const parsed = safeJsonParse(raw);
-
-            if (!parsed) {
-                throw new Error('JSON invalido devuelto por el modelo');
-            }
-
-            const normalized = normalizeResult(parsed);
-
-            logger.success('[OK] Campos extraidos correctamente');
-            return normalized;
-
-        } catch (err) {
-            const isRateLimit = err.status === 429;
-
-            if (attempt < config.maxRetries) {
-                const waitTime = isRateLimit
-                    ? config.retryDelayMs * attempt * 2
-                    : config.retryDelayMs;
-
-                logger.warn(
-                    `[RETRY] intento ${attempt}/${config.maxRetries} - ${err.message}`
-                );
-                await sleep(waitTime);
-
-            } else {
-                logger.error(
-                    `[ERROR] extractor fallo despues de ${config.maxRetries} intentos: ${err.message}`
-                );
-                return {
-                    ...EMPTY_RESULT,
-                    _error: err.message
-                };
-            }
-        }
-    }
-}
