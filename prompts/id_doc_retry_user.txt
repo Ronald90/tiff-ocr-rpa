@@ -1,1 +1,1 @@
-Encuentra los dígitos manuscritos (escritos a mano con tinta) en esta imagen. Devuelve SOLO el número exacto sin deducciones.
+Busca el codigo R visible en esta pagina y responde segun las reglas del sistema.

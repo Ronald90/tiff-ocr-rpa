@@ -49,6 +49,28 @@ function initStream() {
     }
 }
 
+// Cola de mensajes pendientes para manejar backpressure del stream.
+// Si write() devuelve false (buffer lleno), los mensajes se encolan
+// y se vacían cuando el stream emite 'drain'.
+let draining = false;
+const pendingWrites = [];
+
+function flushPending() {
+    while (pendingWrites.length > 0) {
+        const msg = pendingWrites.shift();
+        const ok = logStream.write(msg);
+        if (!ok) {
+            draining = true;
+            logStream.once('drain', () => {
+                draining = false;
+                flushPending();
+            });
+            return;
+        }
+    }
+    draining = false;
+}
+
 function write(level, message) {
     const line = `[${timestamp()}] [${level}] ${message}`;
     console.log(line);
@@ -56,11 +78,18 @@ function write(level, message) {
     // Asegurar que el stream esté listo
     if (!logStream) initStream();
 
-    const written = logStream.write(line + '\n');
-
-    // Si el buffer interno está lleno, podríamos esperar 'drain', 
-    // pero para logs generalmente seguimos escribiendo o dejamos 
-    // que Node maneje el backpressure (buffer en memoria).
+    if (draining) {
+        pendingWrites.push(line + '\n');
+    } else {
+        const ok = logStream.write(line + '\n');
+        if (!ok) {
+            draining = true;
+            logStream.once('drain', () => {
+                draining = false;
+                flushPending();
+            });
+        }
+    }
 }
 
 // Rotar log al iniciar si es necesario

@@ -4,15 +4,22 @@ import crypto from 'crypto';
 import config from './config.js';
 import logger from './logger.js';
 import { processFile } from './ocr-engine.js';
+import { terminateTesseractPool } from './tesseract-ocr.js';
 
 // ── Estado del watcher ────────────────────────────────────────────────
 
 const HISTORY_FILE = path.resolve('./.processed_history.jsonl');
+
+/** Tamaño de la porción de archivo a hashear para identificación única (16 KB) */
+const HASH_SAMPLE_SIZE = 16384;
+
 const historyMap = new Map();
 let historyStream = null;
 let processing = false;
 
-// Cargar historial en memoria al inicio (reconstruir desde log)
+/**
+ * Cargar historial en memoria al inicio (reconstruir desde log NDJSON).
+ */
 function loadHistoryMap() {
     try {
         if (fs.existsSync(HISTORY_FILE)) {
@@ -23,7 +30,6 @@ function loadHistoryMap() {
                 if (!line.trim()) continue;
                 try {
                     const entry = JSON.parse(line);
-                    // Suponemos que el objeto tiene formato { key: "...", data: {...} }
                     if (entry.key && entry.data) {
                         historyMap.set(entry.key, entry.data);
                         loaded++;
@@ -37,12 +43,21 @@ function loadHistoryMap() {
     }
 }
 
-// Inicializar stream de escritura (append-only)
+/**
+ * Inicializar stream de escritura (append-only).
+ */
 function initHistoryStream() {
     historyStream = fs.createWriteStream(HISTORY_FILE, { flags: 'a', encoding: 'utf8' });
+    historyStream.on('error', (err) => {
+        logger.error(`Error escribiendo historial: ${err.message}`);
+    });
 }
 
-// Agregar al historial (Memoria + Disco)
+/**
+ * Agregar al historial (Memoria + Disco).
+ * @param {string} key - Clave única del archivo
+ * @param {object} data - Datos del procesamiento
+ */
 function addToHistory(key, data) {
     historyMap.set(key, data);
     if (historyStream) {
@@ -51,6 +66,11 @@ function addToHistory(key, data) {
     }
 }
 
+/**
+ * Verifica si un archivo tiene extensión TIFF.
+ * @param {string} filename - Nombre del archivo
+ * @returns {boolean}
+ */
 function isTiff(filename) {
     const ext = path.extname(filename).toLowerCase();
     return ['.tif', '.tiff'].includes(ext);
@@ -58,7 +78,21 @@ function isTiff(filename) {
 
 // ── Mover archivo ─────────────────────────────────────────────────────
 
+/**
+ * Mueve un archivo a un directorio destino. Si ya existe, agrega timestamp.
+ * Valida que el origen no sea un symlink para prevenir manipulación.
+ * @param {string} src - Ruta origen
+ * @param {string} destDir - Directorio destino
+ * @returns {string} - Ruta final del archivo movido
+ */
 function moveFile(src, destDir) {
+    // Validar que no sea un symlink (prevención de manipulación)
+    const srcStat = fs.lstatSync(src);
+    if (srcStat.isSymbolicLink()) {
+        logger.warn(`[MOVE] Ignorando symlink: ${src}`);
+        return src;
+    }
+
     const destPath = path.join(destDir, path.basename(src));
 
     // Si ya existe en destino, agregar timestamp
@@ -77,15 +111,15 @@ function moveFile(src, destDir) {
 
 // ── Procesar archivos pendientes ──────────────────────────────────────
 
+/**
+ * Escanea el directorio de entrada y procesa archivos TIFF pendientes
+ * en paralelo usando un worker pool de tamaño configurable.
+ */
 async function processPendingFiles() {
     if (processing) return;
     processing = true;
 
     try {
-        // Optimización: No leer directorio si ya estamos full de trabajo? 
-        // En este diseño simple leemos y filtramos. Para 2000 archivos es manejeable 
-        // si no re-leemos el historial de disco cada vez.
-
         const allFiles = fs.readdirSync(config.inputDir).filter(isTiff);
         if (allFiles.length === 0) return;
 
@@ -93,7 +127,7 @@ async function processPendingFiles() {
         const pending = [];
 
         for (const filename of allFiles) {
-            // Si ya llenamos el batch, paramos de analizar para no bloquear
+            // Si ya llenamos el batch, paramos de analizar
             if (pending.length >= config.maxBatchSize) break;
 
             const filePath = path.join(config.inputDir, filename);
@@ -101,17 +135,17 @@ async function processPendingFiles() {
             try {
                 const stat = fs.statSync(filePath);
 
-                // Hash parcial para identificación única
-                const buf = Buffer.alloc(4096);
+                // Hash SHA-256 parcial (16 KB) para identificación más robusta
+                const buf = Buffer.alloc(HASH_SAMPLE_SIZE);
                 const fd = fs.openSync(filePath, 'r');
-                const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+                const bytesRead = fs.readSync(fd, buf, 0, HASH_SAMPLE_SIZE, 0);
                 fs.closeSync(fd);
 
                 const partialHash = crypto
-                    .createHash('md5')
+                    .createHash('sha256')
                     .update(buf.subarray(0, bytesRead))
                     .digest('hex')
-                    .substring(0, 8);
+                    .substring(0, 16);
 
                 const fileKey = `${filename}::${stat.size}::${partialHash}`;
 
@@ -135,12 +169,14 @@ async function processPendingFiles() {
 
         logger.info(`[PROCESS] Procesando lote de ${pending.length} archivo(s) (${config.fileConcurrency} workers)`);
 
-        // Worker pool
+        // Worker pool con índice atómico (seguro en single-thread de Node)
         let nextIndex = 0;
 
         async function fileWorker(workerId) {
             while (nextIndex < pending.length) {
-                const idx = nextIndex++;
+                // Capturar índice antes de cualquier await
+                const idx = nextIndex;
+                nextIndex++;
                 const { filename, filePath, fileKey } = pending[idx];
 
                 logger.info(`  [WORKER ${workerId}]: procesando ${filename}`);
@@ -191,6 +227,9 @@ async function processPendingFiles() {
 
 // ── Iniciar el watcher ────────────────────────────────────────────────
 
+/**
+ * Inicia el monitor de carpeta (polling) para procesamiento automático.
+ */
 function startWatcher() {
     // Asegurar que las carpetas existen
     [config.inputDir, config.outputDir, config.processedDir, config.errorDir].forEach(dir => {
@@ -223,10 +262,11 @@ function startWatcher() {
     }, config.watchIntervalMs);
 
     // Cierre limpio
-    const shutdown = () => {
+    const shutdown = async () => {
         logger.info('\n[STOP] Deteniendo watcher...');
         clearInterval(interval);
         if (historyStream) historyStream.end();
+        await terminateTesseractPool();
         process.exit(0);
     };
 

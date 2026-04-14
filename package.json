@@ -1,12 +1,13 @@
 {
   "name": "tiff-ocr-rpa",
   "version": "2.0.0",
-  "description": "RPA para OCR de archivos TIFF multipágina usando GPT-4o-mini Vision",
+  "description": "RPA para OCR de archivos TIFF multipágina usando el modelo configurado en .env",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "start": "node main.js",
     "watch": "node watcher.js",
+    "test": "node --test 'tests/**/*.test.js'",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
