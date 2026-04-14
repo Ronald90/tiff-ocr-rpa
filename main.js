@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import config from './config.js';
 import logger from './logger.js';
 import { processFile } from './ocr-engine.js';
 

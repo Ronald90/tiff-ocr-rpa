@@ -1,5 +1,3 @@
-import logger from './logger.js';
-
 /**
  * Calcula la distancia de Levenshtein entre dos cadenas de texto.
  */
@@ -30,6 +28,8 @@ function levenshteinDistance(a, b) {
 function normalize(str) {
     return str.replace(/[^A-Z0-9]/gi, '').toUpperCase();
 }
+
+const MAX_CODE_DIGIT_DISTANCE = 1;
 
 /**
  * Busca la mejor coincidencia aproximada de una subcadena (query) dentro de un texto más grande.
@@ -84,8 +84,11 @@ export function findBestMatchInText(query, text) {
 export function extractDocCode(docText) {
     if (!docText) return null;
 
-    const match = docText.match(/R-\d+/i);
-    if (match) return match[0].toUpperCase();
+    const match = docText.match(/\bR\s*[-.]?\s*(\d{5,7})\b/i);
+    if (match) return `R-${match[1]}`;
+
+    const digitsOnly = docText.match(/\b(\d{5,7})\b/);
+    if (digitsOnly) return `R-${digitsOnly[1]}`;
 
     // Fallback: buscar patrón genérico LETRA-NÚMERO
     const fallback = docText.match(/([A-Z0-9]+-[A-Z0-9]+)/i);
@@ -126,41 +129,73 @@ export function matchSingleNumber(identifiedNumber, documentList) {
 
     // Pre-normalizar el código identificado: convertir prefijos manuscritos comunes a R-
     let normalizedIdentified = identifiedNumber.trim();
-    // Reemplazar prefijos confusos: "12-", "22-", "P-", "K-", "B-", "h-" → "R-"
-    normalizedIdentified = normalizedIdentified.replace(/^[12]{1,2}\s*[-–—.]\s*/i, 'R-');
+    // Reemplazar prefijos confusos de letras: "P-", "K-", "B-", "h-" -> "R-".
+    // Si no aparece letra, se comparan solo digitos con aproximacion controlada.
     normalizedIdentified = normalizedIdentified.replace(/^[PpKkBbHh]\s*[-–—.]\s*/, 'R-');
 
     // Comparar tanto con el original como con el normalizado
-    const variants = [normalize(normalizedIdentified), normalize(identifiedNumber)];
+    const variants = [
+        normalize(normalizedIdentified),
+        normalize(identifiedNumber),
+        normalize(normalizedIdentified).replace(/^R/, ''),
+        normalize(identifiedNumber).replace(/^R/, '')
+    ];
     // Eliminar duplicados
     const uniqueVariants = [...new Set(variants)];
 
     let bestScore = 0;
     let bestDoc = null;
     let bestCode = null;
+    let bestSameDigitLength = false;
+    let bestDistance = Infinity;
+    let ambiguousBest = false;
 
     for (const doc of documentList) {
         const code = extractDocCode(doc);
+        if (!code) continue;
+
         const cleanCode = normalize(code);
+        const codeDigits = cleanCode.replace(/\D/g, '');
+        const codeVariants = [cleanCode, codeDigits];
 
         for (const cleanIdentified of uniqueVariants) {
-            // Comparación directa con Levenshtein
-            const dist = levenshteinDistance(cleanIdentified, cleanCode);
-            const maxLen = Math.max(cleanIdentified.length, cleanCode.length);
-            const score = maxLen === 0 ? 0 : Math.max(0, 1 - (dist / maxLen));
+            const identifiedDigits = cleanIdentified.replace(/\D/g, '');
+            if (identifiedDigits.length !== codeDigits.length) {
+                continue;
+            }
 
-            if (score > bestScore) {
-                bestScore = score;
-                bestDoc = doc;
-                bestCode = code;
+            const hasRPrefix = cleanIdentified.startsWith('R');
+            const targetVariants = hasRPrefix
+                ? codeVariants
+                : [codeDigits];
+
+            for (const cleanTarget of targetVariants) {
+                // Comparación directa con Levenshtein
+                const dist = levenshteinDistance(cleanIdentified, cleanTarget);
+                const maxLen = Math.max(cleanIdentified.length, cleanTarget.length);
+                const score = maxLen === 0 ? 0 : Math.max(0, 1 - (dist / maxLen));
+                const validScore = dist <= MAX_CODE_DIGIT_DISTANCE;
+
+                if (validScore && (score > bestScore || (score === bestScore && dist < bestDistance))) {
+                    bestScore = score;
+                    bestDistance = dist;
+                    bestDoc = doc;
+                    bestCode = code;
+                    bestSameDigitLength = true;
+                    ambiguousBest = false;
+                } else if (validScore && score === bestScore && dist === bestDistance && code !== bestCode) {
+                    ambiguousBest = true;
+                }
             }
         }
     }
 
+    const matched = bestSameDigitLength && !ambiguousBest;
+
     return {
-        matched: bestScore >= 0.7,
-        documento: bestScore >= 0.7 ? bestDoc : null,
-        code: bestScore >= 0.7 ? bestCode : null,
+        matched,
+        documento: matched ? bestDoc : null,
+        code: matched ? bestCode : null,
         score: parseFloat(bestScore.toFixed(4))
     };
 }

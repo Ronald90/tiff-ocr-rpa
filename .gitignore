@@ -2,3 +2,14 @@ node_modules/
 output/
 .env
 .env.local
+
+# Runtime/generated files
+rpa.log
+branch.log
+status.log
+.processed_history.json
+.processed_history.jsonl
+.codex
+input/*
+processed/
+error/

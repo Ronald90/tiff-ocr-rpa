@@ -1,18 +1,17 @@
 # TIFF OCR RPA
 
-Sistema RPA para procesar archivos TIFF multipágina mediante OCR con GPT-4o-mini Vision y extracción automática de datos estructurados en JSON.
+Sistema RPA para procesar archivos TIFF multipágina mediante OCR con el modelo configurado en `.env` y extracción automática de datos estructurados en JSON.
 
 ## Requisitos
 
 - Node.js 18+
-- API key de OpenAI con acceso a GPT-4o / GPT-4o-mini
+- API key de OpenAI con acceso al modelo configurado en `OPENAI_MODEL`
 
 ## Instalación
 
 ```bash
 npm install
-cp .env.example .env
-# Editar .env con tu OPENAI_API_KEY
+# Crear/editar .env con OPENAI_API_KEY y OPENAI_MODEL
 ```
 
 ## Uso
@@ -65,6 +64,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | `destinatario` | string | A quién va dirigido |
 | `referencia` | string | Asunto o referencia (REF:) |
 | `numero_tramite` | string | Número de trámite (ej: T-1211407819) |
+| `es_sirefo` | boolean | Indica si la carátula menciona SIREFO/SIREFI o el sistema de retención/remisión de fondos |
 | `para_conocimiento` | array | Entidades para conocimiento y cumplimiento |
 | `documentos_adjuntos` | array | Documentos adjuntos listados |
 
@@ -73,14 +73,15 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | Variable | Default | Descripción |
 |---|---|---|
 | `OPENAI_API_KEY` | — | API key de OpenAI (requerida) |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Modelo a usar |
-| `CONCURRENCY` | `5` | Páginas procesadas en paralelo por archivo |
+| `OPENAI_MODEL` | — | Modelo a usar (requerido) |
+| `OPENAI_STRONG_MODEL` | igual a `OPENAI_MODEL` | Modelo fuerte opcional para reintentos críticos cuando la extracción o identificación falla |
+| `CONCURRENCY` | `2` | Páginas procesadas en paralelo por archivo |
 | `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Reintentos por página |
-| `MAX_IMAGE_WIDTH` | `1500` | Ancho máximo de imagen en px (redimensionamiento) |
+| `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo de imagen en px (redimensionamiento) |
 | `MAX_FILE_SIZE_MB` | `500` | Tamaño máximo de archivo |
 | `TIMEOUT_PER_PAGE_MS` | `180000` | Timeout por página (3 min) |
-| `WATCH_INTERVAL_MS` | `2000` | Intervalo de polling del watcher |
+| `WATCH_INTERVAL_MS` | `5000` | Intervalo de polling del watcher |
 | `MAX_BATCH_SIZE` | `50` | Archivos máximos por ciclo del watcher |
 | `LOG_DEBUG` | `false` | Habilitar logs de nivel DEBUG |
 | `HTTPS_PROXY` | — | URL del proxy corporativo (HTTPS) |

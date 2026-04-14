@@ -6,7 +6,8 @@ dotenv.config();
 const config = {
     // OpenAI
     apiKey: process.env.OPENAI_API_KEY || '',
-    model: process.env.OPENAI_MODEL || 'gpt-4o',
+    model: process.env.OPENAI_MODEL || '',
+    strongModel: process.env.OPENAI_STRONG_MODEL || process.env.OPENAI_MODEL || '',
 
     // Rendimiento
     concurrency: parseInt(process.env.CONCURRENCY, 10) || 2,
@@ -35,6 +36,11 @@ const config = {
 // Validaciones
 if (!config.apiKey) {
     console.error('Error: OPENAI_API_KEY no está configurada en .env');
+    process.exit(1);
+}
+
+if (!config.model) {
+    console.error('Error: OPENAI_MODEL no está configurado en .env');
     process.exit(1);
 }
 

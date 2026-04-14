@@ -8,6 +8,46 @@ import { extractFields } from './extractor.js';
 import { extractAdjuntoFields } from './adjunto-extractor.js';
 import { matchSingleNumber, extractDocCode } from './fuzzy-match.js';
 import { ocrWithTesseract } from './tesseract-ocr.js';
+import { sleep, renderPrompt, hasStrongFallback, modelLabel, formatTime } from './utils.js';
+
+// ── Constantes ────────────────────────────────────────────────────────
+
+/** Resolución alta para extracción de página (OCR y carátula) */
+const HIGH_RES_WIDTH = 4096;
+
+/** Fracción superior para recortar zona de sello ASFI */
+const ASFI_CROP_FRACTION = 0.40;
+
+/** Fracción superior para franja superior estándar */
+const TOP_STRIP_FRACTION = 0.36;
+
+/** Regiones de recorte para búsqueda multi-pass de código */
+const CROP_REGIONS = {
+    topRight: { left: 0.48, top: 0, width: 0.52, height: 0.34 },
+    topCenterRight: { left: 0.34, top: 0, width: 0.66, height: 0.36 }
+};
+
+/** Timeout para identificación rápida de documento (ms) */
+const ID_TIMEOUT_MS = 30000;
+
+/** Timeout para identificación dirigida (ms) */
+const ID_EXPECTED_TIMEOUT_MS = 45000;
+
+/** Sigma para sharpening de imagen manuscrita */
+const HANDWRITING_SHARPEN_SIGMA = 2;
+
+/** Multiplicador de contraste para mejora de manuscrito */
+const HANDWRITING_CONTRAST = 1.5;
+
+/** Longitud máxima de texto para considerar como rechazo del modelo */
+const REFUSAL_MAX_LENGTH = 200;
+
+/** Máximo de llamadas API por página antes de abandonar la identificación.
+ *  Controla la cascada de reintentos para no desperdiciar créditos. */
+const MAX_API_CALLS_PER_PAGE = 10;
+
+/** Máximo de páginas previas a buscar en fallback de campos críticos */
+const MAX_PREV_PAGES_FALLBACK = 2;
 
 // ── Cargar prompts desde archivos externos ────────────────────────────
 
@@ -18,36 +58,19 @@ const PROMPTS = {
     ocrVisionFallbackUser: fs.readFileSync(path.resolve('./prompts/ocr_vision_fallback_user.txt'), 'utf-8'),
     idDocSystem: fs.readFileSync(path.resolve('./prompts/id_doc_system.txt'), 'utf-8'),
     idDocUser: fs.readFileSync(path.resolve('./prompts/id_doc_user.txt'), 'utf-8'),
+    idDocExpectedSystem: fs.readFileSync(path.resolve('./prompts/id_doc_expected_system.txt'), 'utf-8'),
+    idDocExpectedUser: fs.readFileSync(path.resolve('./prompts/id_doc_expected_user.txt'), 'utf-8'),
     idDocRetrySystem: fs.readFileSync(path.resolve('./prompts/id_doc_retry_system.txt'), 'utf-8'),
     idDocRetryUser: fs.readFileSync(path.resolve('./prompts/id_doc_retry_user.txt'), 'utf-8'),
 };
 
-/**
- * Reemplaza marcadores {{variable}} en un template de prompt.
- */
-function renderPrompt(template, vars = {}) {
-    let result = template;
-    for (const [key, value] of Object.entries(vars)) {
-        result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(value));
-    }
-    return result;
-}
-
-// ── Utilidades ────────────────────────────────────────────────────────
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function formatTime(seconds) {
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return m > 0 ? `${m}m ${s}s` : `${s}s`;
-}
+// ── Utilidades internas ───────────────────────────────────────────────
 
 /**
  * Normaliza texto OCR para mejorar la deteccion de patrones regex.
  * Unifica guiones, colapsa espacios y estandariza formato R-.
+ * @param {string} text - Texto OCR crudo
+ * @returns {string} - Texto normalizado
  */
 function normalizeOCR(text = '') {
     return text
@@ -59,6 +82,13 @@ function normalizeOCR(text = '') {
 
 // ── Extraccion de pagina ──────────────────────────────────────────────
 
+/**
+ * Extrae una página del TIFF como buffer PNG, opcionalmente redimensionada.
+ * @param {string} tiffPath - Ruta al archivo TIFF
+ * @param {number} pageIndex - Índice de página (0-based)
+ * @param {number} [maxWidth] - Ancho máximo en px
+ * @returns {Promise<Buffer>} - Buffer PNG de la página
+ */
 async function extractPageAsPng(tiffPath, pageIndex, maxWidth = config.maxImageWidth) {
     let pipeline = sharp(tiffPath, { page: pageIndex });
     const meta = await pipeline.metadata();
@@ -76,23 +106,26 @@ async function extractPageAsPng(tiffPath, pageIndex, maxWidth = config.maxImageW
 /**
  * Preprocesa una imagen PNG para mejorar la visibilidad de texto manuscrito.
  * Convierte a escala de grises, normaliza brillo, aumenta contraste y nitidez.
+ * @param {Buffer} pngBuffer - Buffer PNG de entrada
+ * @returns {Promise<Buffer>} - Buffer PNG mejorado
  */
 async function enhanceForHandwriting(pngBuffer) {
     return sharp(pngBuffer)
         .greyscale()
         .normalize()
-        .sharpen({ sigma: 2 })
-        .linear(1.5, 0)
+        .sharpen({ sigma: HANDWRITING_SHARPEN_SIGMA })
+        .linear(HANDWRITING_CONTRAST, 0)
         .png()
         .toBuffer();
 }
 
 /**
  * Recorta la seccion superior de la imagen donde tipicamente esta el sello ASFI.
- * @param {Buffer} pngBuffer
- * @param {number} fraction - Fraccion superior a conservar (0.40 = 40% superior)
+ * @param {Buffer} pngBuffer - Buffer PNG de entrada
+ * @param {number} fraction - Fraccion superior a conservar (ej: 0.40 = 40% superior)
+ * @returns {Promise<Buffer>} - Buffer PNG recortado
  */
-async function cropTopSection(pngBuffer, fraction = 0.40) {
+async function cropTopSection(pngBuffer, fraction = ASFI_CROP_FRACTION) {
     const meta = await sharp(pngBuffer).metadata();
     const cropHeight = Math.floor(meta.height * fraction);
     return sharp(pngBuffer)
@@ -101,9 +134,47 @@ async function cropTopSection(pngBuffer, fraction = 0.40) {
         .toBuffer();
 }
 
-// ── OCR completo con GPT-4o ───────────────────────────────────────────
+/**
+ * Recorta una región proporcional de la imagen.
+ * @param {Buffer} pngBuffer - Buffer PNG de entrada
+ * @param {{ left: number, top: number, width: number, height: number }} region - Región proporcional (0-1)
+ * @returns {Promise<Buffer>} - Buffer PNG de la región
+ */
+async function cropRegion(pngBuffer, region) {
+    const meta = await sharp(pngBuffer).metadata();
+    const left = Math.max(0, Math.floor(meta.width * region.left));
+    const top = Math.max(0, Math.floor(meta.height * region.top));
+    const width = Math.min(meta.width - left, Math.floor(meta.width * region.width));
+    const height = Math.min(meta.height - top, Math.floor(meta.height * region.height));
 
-async function ocrWithVision(pngBuffer, pageNum) {
+    return sharp(pngBuffer)
+        .extract({ left, top, width, height })
+        .png()
+        .toBuffer();
+}
+
+/**
+ * Detecta si la respuesta del modelo es un rechazo (frases de negación).
+ * @param {string} text - Texto de respuesta del modelo
+ * @returns {boolean} - true si es un rechazo
+ */
+function isModelRefusal(text) {
+    if (!text || text.length >= REFUSAL_MAX_LENGTH) return false;
+    const lower = text.toLowerCase().trim();
+    return lower.includes('no puedo') || lower.includes('lo siento');
+}
+
+// ── OCR completo con el modelo configurado ────────────────────────────
+
+/**
+ * Realiza OCR de una imagen usando el modelo de vision configurado.
+ * Maneja reintentos, timeouts y rechazos del modelo con prompt fallback.
+ * @param {Buffer} pngBuffer - Buffer PNG de la página
+ * @param {number} pageNum - Número de página (para logging)
+ * @param {string} [model] - Modelo a usar (default: config.model)
+ * @returns {Promise<string>} - Texto transcrito
+ */
+async function ocrWithVision(pngBuffer, pageNum, model = config.model) {
     const imgBase64 = pngBuffer.toString('base64');
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
@@ -112,7 +183,7 @@ async function ocrWithVision(pngBuffer, pageNum) {
 
         try {
             const response = await openai.chat.completions.create({
-                model: config.model,
+                model,
                 messages: [
                     {
                         role: 'system',
@@ -126,22 +197,18 @@ async function ocrWithVision(pngBuffer, pageNum) {
                         ]
                     }
                 ],
-                max_tokens: 4096,
-                temperature: 0.0
+                max_completion_tokens: 4096
             }, { signal: controller.signal });
 
             const text = response.choices[0].message.content;
 
             // Detectar rechazos del modelo
-            const textLower = text.toLowerCase().trim();
-            const isRefusal = text.length < 200 && (textLower.includes('no puedo') || textLower.includes('lo siento'));
-
-            if (isRefusal) {
-                logger.warn(`[REFUSAL] Modelo ${config.model} se nego en pagina ${pageNum}. Reintentando con gpt-4o-mini...`);
+            if (isModelRefusal(text)) {
+                logger.warn(`[REFUSAL] Modelo ${model} se nego en pagina ${pageNum}. Reintentando con prompt fallback...`);
 
                 try {
                     const fallbackResponse = await openai.chat.completions.create({
-                        model: 'gpt-4o-mini',
+                        model,
                         messages: [
                             {
                                 role: 'system',
@@ -155,15 +222,14 @@ async function ocrWithVision(pngBuffer, pageNum) {
                                 ]
                             }
                         ],
-                        max_tokens: 4096,
-                        temperature: 0.0
+                        max_completion_tokens: 4096
                     });
 
                     const fallbackText = fallbackResponse.choices[0].message.content;
-                    logger.info(`[FALLBACK] Pagina ${pageNum} transcrita con gpt-4o-mini correctamente`);
+                    logger.info(`[FALLBACK] Pagina ${pageNum} transcrita con ${model} correctamente`);
                     return fallbackText;
                 } catch (fallbackErr) {
-                    logger.error(`[FALLBACK] Error con gpt-4o-mini en pagina ${pageNum}: ${fallbackErr.message}`);
+                    logger.error(`[FALLBACK] Error con ${model} en pagina ${pageNum}: ${fallbackErr.message}`);
                     throw fallbackErr;
                 }
             }
@@ -185,22 +251,28 @@ async function ocrWithVision(pngBuffer, pageNum) {
 
 // ── Normalizacion de codigo identificado ──────────────────────────────
 
+/**
+ * Normaliza un código identificado por el modelo.
+ * Limpia variantes manuscritas (P-, K-, B-) a R-, detecta rechazos y errores.
+ * @param {string} raw - Código crudo del modelo
+ * @returns {string|null} - Código normalizado o null si no es válido
+ */
 function normalizeIdentifiedCode(raw) {
     if (!raw) return null;
-    let cleaned = raw.trim();
+    const cleaned = raw.trim();
 
     if (cleaned === 'NO_ENCONTRADO' || cleaned.length < 4) return null;
     const lower = cleaned.toLowerCase();
-    if (lower.includes('no puedo') || lower.includes('lo siento') || lower.includes('no se encontr')) return null;
+    if (lower.includes('no_encontrado') || lower.includes('no puedo') || lower.includes('lo siento') || lower.includes('no se encontr')) return null;
 
-    const codeMatch = cleaned.match(/[RrPpKkBbHh12]\s*[-\u2013\u2014.\s]?\s*(\d{5,7})/);
+    const codeMatch = cleaned.match(/\b[RrPpKkBbHh]\s*[-\u2013\u2014.\s]?\s*(\d{5,7})\b/);
     if (codeMatch) {
         return `R-${codeMatch[1]}`;
     }
 
-    const digitsOnly = cleaned.match(/(\d{5,7})/);
+    const digitsOnly = cleaned.match(/\b(\d{5,7})\b/);
     if (digitsOnly) {
-        return `R-${digitsOnly[1]}`;
+        return digitsOnly[1];
     }
 
     return cleaned;
@@ -208,12 +280,19 @@ function normalizeIdentifiedCode(raw) {
 
 // ── Identificacion rapida de numero de documento (prompt principal) ───
 
-async function identifyDocNumber(pngBuffer, pageNum) {
+/**
+ * Identifica el número de documento R-XXXXXX en una página usando el prompt principal.
+ * @param {Buffer} pngBuffer - Buffer PNG de la página
+ * @param {number} pageNum - Número de página
+ * @param {string} [model] - Modelo a usar
+ * @returns {Promise<string|null>} - Código normalizado o null
+ */
+async function identifyDocNumber(pngBuffer, pageNum, model = config.model) {
     const imgBase64 = pngBuffer.toString('base64');
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30000);
+        const timeout = setTimeout(() => controller.abort(), ID_TIMEOUT_MS);
 
         try {
             const messages = [
@@ -234,31 +313,26 @@ async function identifyDocNumber(pngBuffer, pageNum) {
             ];
 
             const response = await openai.chat.completions.create({
-                model: config.model,
-                messages: messages,
-                max_tokens: 50,
-                temperature: 0.0
+                model,
+                messages,
+                max_completion_tokens: 300
             }, { signal: controller.signal });
 
             let result = response.choices[0].message.content.trim();
 
             // Manejar rechazos del modelo
-            const textLower = result.toLowerCase();
-            const isRefusal = result.length < 200 && (textLower.includes('no puedo') || textLower.includes('lo siento'));
-
-            if (isRefusal) {
-                logger.warn(`[ID REFUSAL] Modelo ${config.model} se nego en pagina ${pageNum}. Reintentando con gpt-4o-mini...`);
+            if (isModelRefusal(result)) {
+                logger.warn(`[ID REFUSAL] Modelo ${model} se nego en pagina ${pageNum}. Reintentando con prompt fallback...`);
                 try {
                     const fallbackResponse = await openai.chat.completions.create({
-                        model: 'gpt-4o-mini',
-                        messages: messages,
-                        max_tokens: 50,
-                        temperature: 0.0
+                        model,
+                        messages,
+                        max_completion_tokens: 300
                     });
                     result = fallbackResponse.choices[0].message.content.trim();
-                    logger.info(`[ID FALLBACK] Pagina ${pageNum} identificada con gpt-4o-mini`);
+                    logger.info(`[ID FALLBACK] Pagina ${pageNum} identificada con ${model}`);
                 } catch (fallbackErr) {
-                    logger.error(`[ID FALLBACK] Error con gpt-4o-mini en pagina ${pageNum}: ${fallbackErr.message}`);
+                    logger.error(`[ID FALLBACK] Error con ${model} en pagina ${pageNum}: ${fallbackErr.message}`);
                     throw fallbackErr;
                 }
             }
@@ -277,19 +351,28 @@ async function identifyDocNumber(pngBuffer, pageNum) {
             clearTimeout(timeout);
         }
     }
+
+    return null;
 }
 
 // ── Segundo intento: prompt minimalista enfocado en digitos ───────────
 
-async function identifyDocNumberRetry(pngBuffer, pageNum) {
+/**
+ * Segundo intento de identificación con prompt minimalista.
+ * @param {Buffer} pngBuffer - Buffer PNG de la página
+ * @param {number} pageNum - Número de página
+ * @param {string} [model] - Modelo a usar
+ * @returns {Promise<string|null>} - Código normalizado o null
+ */
+async function identifyDocNumberRetry(pngBuffer, pageNum, model = config.model) {
     const imgBase64 = pngBuffer.toString('base64');
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), ID_TIMEOUT_MS);
 
     try {
         const response = await openai.chat.completions.create({
-            model: config.model,
+            model,
             messages: [
                 {
                     role: 'system',
@@ -303,8 +386,7 @@ async function identifyDocNumberRetry(pngBuffer, pageNum) {
                     ]
                 }
             ],
-            max_tokens: 50,
-            temperature: 0.0
+            max_completion_tokens: 300
         }, { signal: controller.signal });
 
         const result = response.choices[0].message.content.trim();
@@ -318,9 +400,133 @@ async function identifyDocNumberRetry(pngBuffer, pageNum) {
     }
 }
 
+// ── Identificacion dirigida contra codigos pendientes ─────────────────
+
+/**
+ * Identificación dirigida: le muestra al modelo los códigos esperados.
+ * @param {Buffer} pngBuffer - Buffer PNG de la página
+ * @param {number} pageNum - Número de página
+ * @param {string[]} documentList - Lista de documentos adjuntos pendientes
+ * @param {string} [model] - Modelo a usar
+ * @returns {Promise<string|null>} - Código normalizado o null
+ */
+async function identifyExpectedDocNumber(pngBuffer, pageNum, documentList, model = config.model) {
+    const expectedCodes = [...new Set(documentList.map(extractDocCode).filter(Boolean))];
+    if (expectedCodes.length === 0) return null;
+
+    const imgBase64 = pngBuffer.toString('base64');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ID_EXPECTED_TIMEOUT_MS);
+
+    try {
+        const response = await openai.chat.completions.create({
+            model,
+            messages: [
+                {
+                    role: 'system',
+                    content: PROMPTS.idDocExpectedSystem
+                },
+                {
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'text',
+                            text: renderPrompt(PROMPTS.idDocExpectedUser, {
+                                pageNum,
+                                codes: expectedCodes.map(code => `- ${code}`).join('\n')
+                            })
+                        },
+                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                    ]
+                }
+            ],
+            max_completion_tokens: 300
+        }, { signal: controller.signal });
+
+        const result = response.choices[0].message.content.trim();
+        const normalized = normalizeIdentifiedCode(result);
+        if (!normalized) return null;
+
+        if (expectedCodes.includes(normalized)) {
+            return normalized;
+        }
+
+        const match = matchSingleNumber(normalized, documentList);
+        if (match.matched) {
+            return match.code;
+        }
+
+        logger.warn(`  [ID TARGET] Pagina ${pageNum}: respuesta "${normalized}" no esta en codigos pendientes`);
+        return null;
+    } catch (err) {
+        logger.warn(`  [ID TARGET] Error en identificacion dirigida pagina ${pageNum} con ${model}: ${err.message}`);
+        return null;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+/**
+ * Búsqueda multi-pass: prueba múltiples vistas de la página para encontrar el código.
+ * @param {Buffer} pngBuffer - Buffer PNG de la página
+ * @param {number} pageNum - Número de página
+ * @param {string[]} documentList - Lista de documentos adjuntos pendientes
+ * @param {string} [model] - Modelo a usar
+ * @returns {Promise<string|null>} - Código encontrado o null
+ */
+async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentList, model = config.model) {
+    const views = [
+        { label: 'pagina completa', create: async () => pngBuffer },
+        { label: 'franja superior', create: async () => cropTopSection(pngBuffer, TOP_STRIP_FRACTION) },
+        {
+            label: 'zona superior derecha',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topRight)
+        },
+        {
+            label: 'zona superior central-derecha',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topCenterRight)
+        }
+    ];
+
+    for (const view of views) {
+        try {
+            const viewBuffer = await view.create();
+            const found = await identifyExpectedDocNumber(viewBuffer, pageNum, documentList, model);
+            if (found) {
+                logger.info(`  [ID TARGET] Pagina ${pageNum}: ${found} detectado en ${view.label} con ${model}`);
+                return found;
+            }
+        } catch (err) {
+            logger.warn(`  [ID TARGET] Error procesando ${view.label} pagina ${pageNum}: ${err.message}`);
+        }
+    }
+
+    try {
+        const top = await cropTopSection(pngBuffer, TOP_STRIP_FRACTION);
+        const enhancedTop = await enhanceForHandwriting(top);
+        const found = await identifyExpectedDocNumber(enhancedTop, pageNum, documentList, model);
+        if (found) {
+            logger.info(`  [ID TARGET] Pagina ${pageNum}: ${found} detectado en franja superior mejorada con ${model}`);
+            return found;
+        }
+    } catch (err) {
+        logger.warn(`  [ID TARGET] Error en franja superior mejorada pagina ${pageNum}: ${err.message}`);
+    }
+
+    return null;
+}
+
 // ── Fallback: buscar codigo con Tesseract + regex ─────────────────────
 
-async function identifyWithTesseractFallback(pngBuffer, pageNum) {
+/**
+ * Identifica códigos de documento usando Tesseract local + regex.
+ * Actúa como fallback cuando el modelo de visión no encuentra el código.
+ * @param {Buffer} pngBuffer - Buffer PNG de la página
+ * @param {number} pageNum - Número de página
+ * @param {string[]} [documentList] - Lista de documentos para validación cruzada
+ * @returns {Promise<string|null>} - Código encontrado o null
+ */
+async function identifyWithTesseractFallback(pngBuffer, pageNum, documentList = []) {
     try {
         const tesseractText = await ocrWithTesseract(pngBuffer, pageNum);
         if (!tesseractText) return null;
@@ -328,40 +534,189 @@ async function identifyWithTesseractFallback(pngBuffer, pageNum) {
         const cleaned = normalizeOCR(tesseractText);
 
         const patterns = [
-            /R-(\d{5,7})/gi,
-            /[12]\s*[-.]?\s*(\d{5,7})/g,
-            /[PpKkBbHh]\s*[-.]?\s*(\d{5,7})/g,
-            /(?:^|\s|[-])\s*(\d{6,7})(?:\s|$|[^\d])/gm,
+            { regex: /\bR-(\d{5,7})\b/gi, prefixed: true },
+            { regex: /\b[PpKkBbHh]\s*[-.]?\s*(\d{5,7})\b/g, prefixed: true },
+            { regex: /(?:^|\s|[-])\s*(\d{6,7})(?:\s|$|[^\d])/gm, prefixed: false },
         ];
 
+        const candidates = [];
         for (const pattern of patterns) {
-            const match = pattern.exec(cleaned);
-            if (match) {
+            let match;
+            while ((match = pattern.regex.exec(cleaned)) !== null) {
                 const digits = match[1];
-                logger.info(`  [TESS-FALLBACK] Patron encontrado en texto Tesseract: R-${digits}`);
-                return `R-${digits}`;
+                const code = pattern.prefixed ? `R-${digits}` : digits;
+                candidates.push(code);
             }
         }
 
-        return null;
+        const uniqueCandidates = [...new Set(candidates)];
+        if (uniqueCandidates.length === 0) return null;
+
+        if (documentList.length > 0) {
+            for (const candidate of uniqueCandidates) {
+                const result = matchSingleNumber(candidate, documentList);
+                if (result.matched) {
+                    logger.info(`  [TESS-FALLBACK] Candidato validado contra pendientes: ${candidate} -> ${result.code}`);
+                    return candidate;
+                }
+            }
+        }
+
+        logger.info(`  [TESS-FALLBACK] Patron encontrado en texto Tesseract: ${uniqueCandidates[0]}`);
+        return uniqueCandidates[0];
     } catch (err) {
         logger.warn(`  [TESS-FALLBACK] Error en Tesseract fallback pagina ${pageNum}: ${err.message}`);
         return null;
     }
 }
 
+// ── Identificación escalonada con presupuesto de llamadas API ─────────
+
+/**
+ * Orquesta la cascada de identificación de código en una página,
+ * respetando un presupuesto máximo de llamadas API.
+ *
+ * Orden de intentos:
+ *   1. identifyDocNumber (prompt principal)
+ *   2. identifyDocNumberRetry (prompt minimalista)
+ *   3. Tesseract + regex (sin API)
+ *   4. Imagen mejorada + identifyDocNumber
+ *   5. Crop ASFI + enhanced + identifyDocNumber
+ *   6. Tesseract + enhanced (sin API)
+ *   7. identifyExpectedDocNumberMultiPass (búsqueda dirigida)
+ *   8. Modelo fuerte (si disponible y queda presupuesto)
+ *
+ * @param {Buffer} pngBuffer - Buffer PNG de la página
+ * @param {number} pageNum - Número de página
+ * @param {string[]} pendingAdjuntos - Lista de adjuntos pendientes
+ * @returns {Promise<string|null>} - Código identificado o null
+ */
+async function identifyPageCode(pngBuffer, pageNum, pendingAdjuntos) {
+    let apiCalls = 0;
+    const budget = MAX_API_CALLS_PER_PAGE;
+
+    /** Ejecuta fn solo si queda presupuesto. Incrementa el contador. */
+    async function withBudget(fn, label) {
+        if (apiCalls >= budget) {
+            logger.debug(`  [BUDGET] Pagina ${pageNum}: presupuesto agotado (${apiCalls}/${budget}), omitiendo ${label}`);
+            return null;
+        }
+        apiCalls++;
+        return fn();
+    }
+
+    // Paso 1: Prompt principal
+    let result = await withBudget(
+        () => identifyDocNumber(pngBuffer, pageNum),
+        'identifyDocNumber'
+    );
+    if (result) return result;
+
+    // Paso 2: Prompt minimalista
+    logger.info(`  [RETRY] Pagina ${pageNum} - Segundo intento con prompt alternativo...`);
+    result = await withBudget(
+        () => identifyDocNumberRetry(pngBuffer, pageNum),
+        'identifyDocNumberRetry'
+    );
+    if (result) return result;
+
+    // Paso 3: Tesseract + regex (no consume API)
+    logger.info(`  [RETRY] Pagina ${pageNum} - Fallback con Tesseract + regex...`);
+    result = await identifyWithTesseractFallback(pngBuffer, pageNum, pendingAdjuntos);
+    if (result) return result;
+
+    // Paso 4: Imagen mejorada + identificación
+    logger.info(`  [RETRY] Pagina ${pageNum} - Intento con imagen mejorada (enhanced)...`);
+    try {
+        const enhancedBuffer = await enhanceForHandwriting(pngBuffer);
+        result = await withBudget(
+            () => identifyDocNumber(enhancedBuffer, pageNum),
+            'identifyDocNumber(enhanced)'
+        );
+        if (result) return result;
+
+        // Paso 5: Crop ASFI + enhanced
+        if (apiCalls < budget) {
+            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con crop zona ASFI + enhanced...`);
+            const croppedBuffer = await cropTopSection(pngBuffer, ASFI_CROP_FRACTION);
+            const enhancedCrop = await enhanceForHandwriting(croppedBuffer);
+            result = await withBudget(
+                () => identifyDocNumber(enhancedCrop, pageNum),
+                'identifyDocNumber(crop+enhanced)'
+            );
+            if (result) return result;
+        }
+
+        // Paso 6: Tesseract + enhanced (no consume API)
+        const enhancedBuffer2 = await enhanceForHandwriting(pngBuffer);
+        result = await identifyWithTesseractFallback(enhancedBuffer2, pageNum, pendingAdjuntos);
+        if (result) return result;
+    } catch (enhanceErr) {
+        logger.warn(`  [ENHANCE] Error en preprocesamiento pagina ${pageNum}: ${enhanceErr.message}`);
+    }
+
+    // Paso 7: Búsqueda dirigida con códigos pendientes
+    if (apiCalls < budget) {
+        logger.info(`  [RETRY] Pagina ${pageNum} - Busqueda dirigida con codigos pendientes...`);
+        result = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos);
+        apiCalls += 5; // multipass consume ~5 llamadas
+        if (result) return result;
+
+        if (hasStrongFallback() && apiCalls < budget) {
+            logger.info(`  [RETRY] Pagina ${pageNum} - Busqueda dirigida con modelo fuerte ${config.strongModel}...`);
+            result = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos, config.strongModel);
+            apiCalls += 5;
+            if (result) return result;
+        }
+    }
+
+    // Paso 8: Modelo fuerte como último recurso
+    if (hasStrongFallback() && apiCalls < budget) {
+        logger.info(`  [RETRY] Pagina ${pageNum} - Reintentando con modelo fuerte ${config.strongModel}...`);
+
+        result = await withBudget(
+            () => identifyDocNumber(pngBuffer, pageNum, config.strongModel),
+            'identifyDocNumber(strong)'
+        );
+        if (result) return result;
+
+        result = await withBudget(
+            () => identifyDocNumberRetry(pngBuffer, pageNum, config.strongModel),
+            'identifyDocNumberRetry(strong)'
+        );
+        if (result) return result;
+
+        if (apiCalls < budget) {
+            try {
+                const enhancedBuffer = await enhanceForHandwriting(pngBuffer);
+                result = await withBudget(
+                    () => identifyDocNumber(enhancedBuffer, pageNum, config.strongModel),
+                    'identifyDocNumber(strong+enhanced)'
+                );
+                if (result) return result;
+            } catch (strongEnhanceErr) {
+                logger.warn(`  [ENHANCE] Error en reintento fuerte pagina ${pageNum}: ${strongEnhanceErr.message}`);
+            }
+        }
+    }
+
+    logger.debug(`  [BUDGET] Pagina ${pageNum}: total de llamadas API: ${apiCalls}/${budget}`);
+    return null;
+}
+
 // ── Funcion principal exportada ───────────────────────────────────────
 
 /**
- * Procesa un archivo TIFF:
- *  Fase 1: OCR de pagina 1 (caratula) -> extraer documentos_adjuntos
- *  Fase 1b: Pase dedicado para extraer codigos R-XXXXXX directamente de la imagen
- *  Fase 2: Identificacion rapida de numeros en paginas 2+
- *  Fase 3: Fuzzy match + OCR selectivo solo de paginas que coinciden
- *  Fase 4: Reporte de codigos no encontrados
+ * Procesa un archivo TIFF completo:
+ *
+ *  Fase 1: OCR de carátula (puede ser multi-página) → extraer documentos_adjuntos
+ *  Fase 2: Identificación escalonada de números en páginas 2+
+ *  Fase 3: OCR selectivo + extracción de datos de adjuntos que coinciden
+ *  Fase 4: Reporte de códigos no encontrados
  *
  * @param {string} tiffPath - Ruta absoluta al archivo TIFF
  * @param {string} outputDir - Directorio donde guardar los archivos de salida
+ * @returns {Promise<{outputPath: string, jsonPath: string, numPages: number, success: number, errors: number, skipped: number, elapsed: string, extractedData: object}>}
  */
 export async function processFile(tiffPath, outputDir) {
     const startTime = Date.now();
@@ -385,14 +740,14 @@ export async function processFile(tiffPath, outputDir) {
     // Obtener numero de paginas
     const metadata = await sharp(tiffPath).metadata();
     const numPages = metadata.pages || 1;
-    logger.info(`Paginas: ${numPages} | Tamano: ${fileSizeMB.toFixed(1)} MB | Modelo: ${config.model}`);
+    logger.info(`Paginas: ${numPages} | Tamano: ${fileSizeMB.toFixed(1)} MB | Modelo: ${modelLabel()}`);
 
     // ===================================================================
     // FASE 1: OCR de caratula (puede ser multi-pagina) + extraccion
     // ===================================================================
 
-    logger.info(`[FASE 1] OCR de la caratula con Tesseract (pagina 1)...`);
-    const page1Png = await extractPageAsPng(tiffPath, 0, 4096);
+    logger.info('[FASE 1] OCR de la caratula con Tesseract (pagina 1)...');
+    const page1Png = await extractPageAsPng(tiffPath, 0, HIGH_RES_WIDTH);
     const page1SizeKB = (page1Png.length / 1024).toFixed(1);
     const page1Text = await ocrWithTesseract(page1Png, 1);
     logger.info(`  [PAGE] Pagina 1/${numPages} (${page1SizeKB} KB) - Caratula [Tesseract]`);
@@ -419,7 +774,7 @@ export async function processFile(tiffPath, outputDir) {
     const coverTexts = [page1Text];
 
     for (let ci = 1; ci < coverPageCount && ci < numPages; ci++) {
-        const coverPng = await extractPageAsPng(tiffPath, ci, 4096);
+        const coverPng = await extractPageAsPng(tiffPath, ci, HIGH_RES_WIDTH);
         const coverSizeKB = (coverPng.length / 1024).toFixed(1);
         const coverText = await ocrWithTesseract(coverPng, ci + 1);
         coverPngs.push(coverPng);
@@ -428,12 +783,24 @@ export async function processFile(tiffPath, outputDir) {
     }
 
     const fullCoverText = coverTexts.join('\n\n');
-    const extractedData = await extractFields(fullCoverText);
+    let extractedData = await extractFields(fullCoverText);
 
-    const adjuntos = extractedData.documentos_adjuntos || [];
+    let adjuntos = extractedData.documentos_adjuntos || [];
+
+    if ((extractedData._error || adjuntos.length === 0) && hasStrongFallback()) {
+        logger.warn(`[FASE 1] Extraccion de caratula incompleta con ${config.model}. Reintentando con modelo fuerte ${config.strongModel}...`);
+        const strongExtractedData = await extractFields(fullCoverText, { model: config.strongModel });
+        const strongAdjuntos = strongExtractedData.documentos_adjuntos || [];
+
+        if (!strongExtractedData._error && (strongAdjuntos.length > 0 || adjuntos.length === 0)) {
+            extractedData = strongExtractedData;
+            adjuntos = strongAdjuntos;
+            logger.info(`[FASE 1] Resultado de caratula actualizado con ${config.strongModel}. Adjuntos: ${adjuntos.length}`);
+        }
+    }
 
     if (adjuntos.length === 0) {
-        logger.warn(`[FASE 1] No se encontraron documentos adjuntos en la caratula. Se omiten paginas restantes.`);
+        logger.warn('[FASE 1] No se encontraron documentos adjuntos en la caratula. Se omiten paginas restantes.');
     } else {
         logger.info(`[FASE 1] Documentos adjuntos encontrados: ${adjuntos.length}`);
         for (const adj of adjuntos) {
@@ -442,7 +809,7 @@ export async function processFile(tiffPath, outputDir) {
     }
 
     // ===================================================================
-    // FASE 2 y 3: Identificacion rapida + OCR selectivo (paginas despues de caratula)
+    // FASE 2 y 3: Identificacion + OCR selectivo (paginas despues de caratula)
     // ===================================================================
 
     const ubicacion_adjuntos = [];
@@ -467,44 +834,29 @@ export async function processFile(tiffPath, outputDir) {
             }
 
             try {
-                const pngBuffer = await extractPageAsPng(tiffPath, pageIndex, 4096);
+                const pngBuffer = await extractPageAsPng(tiffPath, pageIndex, HIGH_RES_WIDTH);
                 const sizeKB = (pngBuffer.length / 1024).toFixed(1);
 
-                // Paso 2A: Identificacion rapida del numero (prompt principal)
-                let identifiedNumber = await identifyDocNumber(pngBuffer, pageNum);
+                // Identificación escalonada con presupuesto
+                let identifiedNumber = await identifyPageCode(pngBuffer, pageNum, pendingAdjuntos);
 
-                // Paso 2A.1: Si no se encontro, segundo intento con prompt minimalista
-                if (!identifiedNumber) {
-                    logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Segundo intento con prompt alternativo...`);
-                    identifiedNumber = await identifyDocNumberRetry(pngBuffer, pageNum);
-                }
+                // Fuzzy match contra la lista de adjuntos PENDIENTES
+                let matchResult = matchSingleNumber(identifiedNumber, pendingAdjuntos);
 
-                // Paso 2A.2: Si aun no se encontro, fallback con Tesseract + regex
-                if (!identifiedNumber) {
-                    logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Fallback con Tesseract + regex...`);
-                    identifiedNumber = await identifyWithTesseractFallback(pngBuffer, pageNum);
-                }
-
-                // Paso 2A.3: Si aun no se encontro, intento con imagen mejorada (enhanced + crop)
-                if (!identifiedNumber) {
-                    logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Intento con imagen mejorada (enhanced)...`);
-                    try {
-                        const enhancedBuffer = await enhanceForHandwriting(pngBuffer);
-                        identifiedNumber = await identifyDocNumber(enhancedBuffer, pageNum);
-
-                        if (!identifiedNumber) {
-                            logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Intento con crop zona ASFI + enhanced...`);
-                            const croppedBuffer = await cropTopSection(pngBuffer, 0.40);
-                            const enhancedCrop = await enhanceForHandwriting(croppedBuffer);
-                            identifiedNumber = await identifyDocNumber(enhancedCrop, pageNum);
+                // Si el código fue encontrado pero no coincide, intento dirigido
+                if (identifiedNumber && !matchResult.matched) {
+                    logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Codigo "${identifiedNumber}" no coincide. Reintentando contra lista pendiente...`);
+                    let targetedNumber = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos);
+                    if (!targetedNumber && hasStrongFallback()) {
+                        targetedNumber = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos, config.strongModel);
+                    }
+                    if (targetedNumber) {
+                        const targetedMatch = matchSingleNumber(targetedNumber, pendingAdjuntos);
+                        if (targetedMatch.matched) {
+                            identifiedNumber = targetedNumber;
+                            matchResult = targetedMatch;
+                            logger.info(`  [ID TARGET] Pagina ${pageNum}/${numPages} - Codigo corregido: ${identifiedNumber}`);
                         }
-
-                        if (!identifiedNumber) {
-                            const enhancedBuffer2 = await enhanceForHandwriting(pngBuffer);
-                            identifiedNumber = await identifyWithTesseractFallback(enhancedBuffer2, pageNum);
-                        }
-                    } catch (enhanceErr) {
-                        logger.warn(`  [ENHANCE] Error en preprocesamiento pagina ${pageNum}: ${enhanceErr.message}`);
                     }
                 }
 
@@ -516,9 +868,6 @@ export async function processFile(tiffPath, outputDir) {
                 }
 
                 logger.info(`  [ID] Pagina ${pageNum}/${numPages} - Codigo identificado: ${identifiedNumber}`);
-
-                // Paso 2B: Fuzzy match contra la lista de adjuntos PENDIENTES
-                const matchResult = matchSingleNumber(identifiedNumber, pendingAdjuntos);
 
                 if (!matchResult.matched) {
                     const isAlreadyFound = matchedCodes.has(identifiedNumber.match(/R-\d{5,7}/)?.[0] || '');
@@ -535,68 +884,106 @@ export async function processFile(tiffPath, outputDir) {
                 logger.info(`  [MATCH] Pagina ${pageNum} <-> ${matchResult.code} (confianza: ${(matchResult.score * 100).toFixed(0)}%)`);
                 matchedCodes.add(matchResult.code);
 
-                pendingAdjuntos = pendingAdjuntos.filter(doc => !doc.includes(matchResult.code));
+                pendingAdjuntos = pendingAdjuntos.filter(doc => extractDocCode(doc) !== matchResult.code);
                 logger.info(`  [INFO] Codigo "${matchResult.code}" removido de la lista de busqueda. Faltan ${pendingAdjuntos.length} codigos.`);
 
-                // Paso 3: OCR de esta pagina + la siguiente (adjuntos suelen ser multi-pagina)
+                // Paso 3: OCR de esta pagina
                 logger.info(`  [OCR] Transcribiendo pagina ${pageNum}/${numPages} (${sizeKB} KB)...`);
-                const ocrText = await ocrWithVision(pngBuffer, pageNum);
+                const ocrText = (await ocrWithVision(pngBuffer, pageNum)) || '';
                 allText.push(ocrText);
                 successCount++;
 
-                // OCR de la pagina siguiente (si existe y no es la caratula)
-                let nextPageText = '';
+                // Paso 3B: Intentar extracción con solo la página actual primero
+                let extractionText = ocrText;
+                logger.info(`  [EXTRACT] Extrayendo datos del adjunto (${extractionText.length} chars, 1 pagina)...`);
+                let adjuntoData = await extractAdjuntoFields(extractionText);
+
+                let hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
+
+                // Paso 3C: Si faltan campos críticos, intentar con la página siguiente (OCR+1)
                 const nextPageIndex = pageIndex + 1;
-                if (nextPageIndex < numPages) {
+                if (!hasCriticalFields && nextPageIndex < numPages) {
                     try {
-                        const nextPng = await extractPageAsPng(tiffPath, nextPageIndex, 4096);
+                        const nextPng = await extractPageAsPng(tiffPath, nextPageIndex, HIGH_RES_WIDTH);
                         const nextSizeKB = (nextPng.length / 1024).toFixed(1);
-                        logger.info(`  [OCR+1] Transcribiendo pagina siguiente ${nextPageIndex + 1}/${numPages} (${nextSizeKB} KB)...`);
-                        nextPageText = await ocrWithVision(nextPng, nextPageIndex + 1);
+                        logger.info(`  [OCR+1] Campos criticos vacios. Transcribiendo pagina siguiente ${nextPageIndex + 1}/${numPages} (${nextSizeKB} KB)...`);
+                        const nextPageText = (await ocrWithVision(nextPng, nextPageIndex + 1)) || '';
+
+                        if (nextPageText.trim().length > 0) {
+                            extractionText = ocrText + '\n\n' + nextPageText;
+                            logger.info(`  [EXTRACT] Re-extrayendo con 2 paginas (${extractionText.length} chars)...`);
+                            adjuntoData = await extractAdjuntoFields(extractionText);
+                            hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
+                        }
                     } catch (nextErr) {
                         logger.warn(`  [OCR+1] Error en pagina ${nextPageIndex + 1}: ${nextErr.message}`);
                     }
                 }
 
-                // Paso 3B: Extraer datos estructurados del adjunto (pagina actual + siguiente)
-                const extractionText = nextPageText
-                    ? ocrText + '\n\n' + nextPageText
-                    : ocrText;
-                logger.info(`  [EXTRACT] Extrayendo datos del adjunto (${extractionText.length} chars, ${nextPageText ? '2 paginas' : '1 pagina'})...`);
-                let adjuntoData = await extractAdjuntoFields(extractionText);
+                // Paso 3D: Fallback modelo fuerte si aún faltan campos
+                if (!hasCriticalFields && hasStrongFallback()) {
+                    logger.info(`  [EXTRACT] Campos criticos vacios. Reintentando adjunto con modelo fuerte ${config.strongModel}...`);
+                    adjuntoData = await extractAdjuntoFields(extractionText, { model: config.strongModel });
+                    hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
+                }
 
-                // Paso 3C: Fallback paginas anteriores — si campos criticos estan vacios,
-                // el codigo R- puede estar en una pagina interior del adjunto.
-                const hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
-
+                // Paso 3E: Fallback paginas anteriores — primero con Tesseract (rápido),
+                // luego con Vision solo si Tesseract no es suficiente.
                 if (!hasCriticalFields && pageIndex > coverPageCount) {
-                    const maxPrevPages = 2;
-                    const startIdx = Math.max(coverPageCount, pageIndex - maxPrevPages);
-                    logger.info(`  [FALLBACK] Campos criticos vacios. Buscando en paginas anteriores ${startIdx + 1}-${pageNum}...`);
+                    const startIdx = Math.max(coverPageCount, pageIndex - MAX_PREV_PAGES_FALLBACK);
+                    logger.info(`  [FALLBACK] Campos criticos vacios. Buscando en paginas anteriores ${startIdx + 1}-${pageNum} con Tesseract...`);
 
+                    // Intentar primero con Tesseract (rápido, sin costo API)
                     let combinedText = '';
                     for (let prevIdx = startIdx; prevIdx < pageIndex; prevIdx++) {
                         try {
-                            const prevPng = await extractPageAsPng(tiffPath, prevIdx, 4096);
-                            const prevText = await ocrWithVision(prevPng, prevIdx + 1);
-                            combinedText += prevText + '\n\n';
-                            logger.info(`  [FALLBACK] Pagina ${prevIdx + 1} transcrita para contexto`);
+                            const prevPng = await extractPageAsPng(tiffPath, prevIdx, HIGH_RES_WIDTH);
+                            const prevText = await ocrWithTesseract(prevPng, prevIdx + 1);
+                            if (prevText) {
+                                combinedText += prevText + '\n\n';
+                                logger.info(`  [FALLBACK] Pagina ${prevIdx + 1} transcrita con Tesseract para contexto`);
+                            }
                         } catch (prevErr) {
-                            logger.warn(`  [FALLBACK] Error en pagina ${prevIdx + 1}: ${prevErr.message}`);
+                            logger.warn(`  [FALLBACK] Error Tesseract en pagina ${prevIdx + 1}: ${prevErr.message}`);
                         }
                     }
 
                     if (combinedText.trim().length > 0) {
                         const fullText = combinedText + extractionText;
-                        logger.info(`  [FALLBACK] Re-extrayendo con texto combinado (${fullText.length} chars)...`);
+                        logger.info(`  [FALLBACK] Re-extrayendo con texto combinado Tesseract (${fullText.length} chars)...`);
                         adjuntoData = await extractAdjuntoFields(fullText);
+                        hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
+                    }
 
-                        const nowHasCritical = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
-                        if (nowHasCritical) {
-                            logger.success(`  [FALLBACK] Campos criticos recuperados con exito`);
-                        } else {
-                            logger.warn(`  [FALLBACK] Aun sin campos criticos despues del fallback multi-pagina`);
+                    // Solo usar Vision API si Tesseract no fue suficiente
+                    if (!hasCriticalFields) {
+                        logger.info('  [FALLBACK] Tesseract insuficiente. Reintentando con Vision API...');
+                        combinedText = '';
+                        for (let prevIdx = startIdx; prevIdx < pageIndex; prevIdx++) {
+                            try {
+                                const prevPng = await extractPageAsPng(tiffPath, prevIdx, HIGH_RES_WIDTH);
+                                const prevText = (await ocrWithVision(prevPng, prevIdx + 1)) || '';
+                                combinedText += prevText + '\n\n';
+                                logger.info(`  [FALLBACK] Pagina ${prevIdx + 1} transcrita con Vision para contexto`);
+                            } catch (prevErr) {
+                                logger.warn(`  [FALLBACK] Error Vision en pagina ${prevIdx + 1}: ${prevErr.message}`);
+                            }
                         }
+
+                        if (combinedText.trim().length > 0) {
+                            const fullText = combinedText + extractionText;
+                            logger.info(`  [FALLBACK] Re-extrayendo con texto combinado Vision (${fullText.length} chars)...`);
+                            adjuntoData = await extractAdjuntoFields(fullText);
+
+                            const nowHasCritical = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
+                            if (nowHasCritical) {
+                                logger.success('  [FALLBACK] Campos criticos recuperados con exito');
+                            } else {
+                                logger.warn('  [FALLBACK] Aun sin campos criticos despues del fallback multi-pagina');
+                            }
+                        }
+                    } else {
+                        logger.success('  [FALLBACK] Campos criticos recuperados con Tesseract');
                     }
                 }
 
@@ -628,16 +1015,16 @@ export async function processFile(tiffPath, outputDir) {
 
     if (notFound.length > 0) {
         logger.separator();
-        logger.warn(`+======================================================+`);
-        logger.warn(`|  REPORTE: CODIGOS NO ENCONTRADOS                     |`);
-        logger.warn(`+======================================================+`);
+        logger.warn('+======================================================+');
+        logger.warn('|  REPORTE: CODIGOS NO ENCONTRADOS                     |');
+        logger.warn('+======================================================+');
         for (const doc of notFound) {
-            const code = extractDocCode(doc);
+            const code = extractDocCode(doc) || 'SIN_CODIGO';
             logger.warn(`|  x ${code.padEnd(15)} - ${doc}`);
         }
-        logger.warn(`+======================================================+`);
+        logger.warn('+======================================================+');
         logger.warn(`|  Total no encontrados: ${String(notFound.length).padEnd(3)} de ${adjuntos.length} adjuntos     |`);
-        logger.warn(`+======================================================+`);
+        logger.warn('+======================================================+');
         logger.separator();
     } else if (adjuntos.length > 0) {
         logger.success(`[OK] Todos los ${adjuntos.length} documentos adjuntos fueron localizados exitosamente.`);
@@ -649,8 +1036,13 @@ export async function processFile(tiffPath, outputDir) {
 
     const stream = fs.createWriteStream(outputPath);
 
+    // Manejar errores del stream de escritura
+    stream.on('error', (err) => {
+        logger.error(`[OUTPUT] Error escribiendo archivo de salida: ${err.message}`);
+    });
+
     stream.write('='.repeat(60) + '\n');
-    stream.write(`OCR con ${config.model} Vision - Extraccion de texto\n`);
+    stream.write(`OCR con ${modelLabel()} Vision - Extraccion de texto\n`);
     stream.write(`Archivo: ${path.basename(tiffPath)}\n`);
     stream.write(`Fecha: ${now}\n`);
     stream.write(`Total de paginas: ${numPages}\n`);
@@ -684,7 +1076,7 @@ export async function processFile(tiffPath, outputDir) {
     stream.write(`Completado en ${elapsedStr}\n`);
     stream.write(`Transcritas: ${successCount} | Omitidas: ${skippedCount} | Errores: ${errorCount}\n`);
     if (notFound.length > 0) {
-        stream.write(`\nCODIGOS NO ENCONTRADOS:\n`);
+        stream.write('\nCODIGOS NO ENCONTRADOS:\n');
         for (const doc of notFound) {
             stream.write(`  x ${doc}\n`);
         }
@@ -703,7 +1095,7 @@ export async function processFile(tiffPath, outputDir) {
         paginas_omitidas: skippedCount,
         ...extractedData,
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
-        codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d)) : undefined
+        codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined
     };
 
     fs.writeFileSync(jsonPath, JSON.stringify(jsonOutput, null, 2), 'utf-8');
