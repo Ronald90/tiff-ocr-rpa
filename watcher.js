@@ -4,7 +4,6 @@ import crypto from 'crypto';
 import config from './config.js';
 import logger from './logger.js';
 import { processFile } from './ocr-engine.js';
-import { terminateTesseractPool } from './tesseract-ocr.js';
 
 // ── Estado del watcher ────────────────────────────────────────────────
 
@@ -237,7 +236,7 @@ function startWatcher() {
     });
 
     logger.separator();
-    logger.info('[INIT] RPA OCR Watcher iniciado');
+    logger.info('[INIT] RPA Vision Watcher iniciado');
     logger.info(`   Input:     ${config.inputDir}`);
     logger.info(`   Output:    ${config.outputDir}`);
     logger.info(`   Processed: ${config.processedDir}`);
@@ -266,7 +265,6 @@ function startWatcher() {
         logger.info('\n[STOP] Deteniendo watcher...');
         clearInterval(interval);
         if (historyStream) historyStream.end();
-        await terminateTesseractPool();
         process.exit(0);
     };
 

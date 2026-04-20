@@ -1,1 +1,1 @@
-Busca el codigo R visible en esta pagina y responde segun las reglas del sistema.
+Busca el codigo R visible en esta pagina, especialmente en sellos inferiores ASFI/RECEPCION y en el recuadro No. TRAMITE. Responde solo R-XXXXX/R-XXXXXX, solo los digitos visibles, o NO_ENCONTRADO.

@@ -23,6 +23,10 @@ describe('extractDocCode', () => {
         assert.equal(extractDocCode('R.266293 algo'), 'R-266293');
     });
 
+    it('extrae codigo R con digitos separados por espacios', () => {
+        assert.equal(extractDocCode('R-26 912 DE 12 DE NOVIEMBRE DE 2025'), 'R-26912');
+    });
+
     it('extrae solo dígitos cuando no hay prefijo R', () => {
         assert.equal(extractDocCode('DOCUMENTO 241594 FECHA'), 'R-241594');
     });
@@ -77,6 +81,11 @@ describe('extractRCodes', () => {
         const codes = extractRCodes('R 123456');
         assert.deepEqual(codes, ['R-123456']);
     });
+
+    it('maneja formato con espacios internos entre digitos', () => {
+        const codes = extractRCodes('Recibido R-26 912 en sello ASFI');
+        assert.deepEqual(codes, ['R-26912']);
+    });
 });
 
 // ── findBestMatchInText ───────────────────────────────────────────────
@@ -94,7 +103,7 @@ describe('findBestMatchInText', () => {
         assert.deepEqual(findBestMatchInText('algo', null), { found: false, score: 0 });
     });
 
-    it('encuentra coincidencia con errores OCR (1 dígito)', () => {
+    it('encuentra coincidencia con errores de transcripcion (1 digito)', () => {
         const result = findBestMatchInText('R241594', 'R241584');
         assert.equal(result.found, true);
         assert.ok(result.score >= 0.7);
@@ -128,6 +137,12 @@ describe('matchSingleNumber', () => {
         assert.equal(result.code, 'R-266293');
     });
 
+    it('match con codigo de 5 digitos separado por espacios', () => {
+        const result = matchSingleNumber('R-26 912', ['R-26912 DE 12 DE NOVIEMBRE DE 2025']);
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-26912');
+    });
+
     it('match con prefijo P- (manuscrito confuso)', () => {
         const result = matchSingleNumber('P-241594', documentList);
         assert.equal(result.matched, true);
@@ -145,7 +160,7 @@ describe('matchSingleNumber', () => {
         assert.equal(result.matched, false);
     });
 
-    it('match con 1 dígito de diferencia (OCR error)', () => {
+    it('match con 1 digito de diferencia por error de transcripcion', () => {
         const result = matchSingleNumber('R-241584', documentList);
         // MAX_CODE_DIGIT_DISTANCE = 1, así que 1 dígito de diferencia debería matchear
         assert.equal(result.matched, true);

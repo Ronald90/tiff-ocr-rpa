@@ -26,25 +26,13 @@ export function renderPrompt(template, vars = {}) {
 }
 
 /**
- * Indica si existe un modelo fuerte de respaldo distinto al principal.
- * @returns {boolean}
- */
-export function hasStrongFallback() {
-    return Boolean(config.strongModel && config.strongModel !== config.model);
-}
-
-/**
  * Determina qué modelo usar para un intento dado.
- * En el último reintento usa el modelo fuerte si está disponible.
- * @param {number} attempt - Número de intento actual (1-indexed)
- * @param {string} [forcedModel] - Modelo forzado; si se especifica, se usa directamente
+ * El flujo actual usa exclusivamente OPENAI_MODEL.
+ * @param {number} _attempt - Número de intento actual (1-indexed)
  * @returns {string} - Nombre del modelo a usar
  */
-export function modelForAttempt(attempt, forcedModel) {
-    if (forcedModel) return forcedModel;
-    return hasStrongFallback() && attempt === config.maxRetries
-        ? config.strongModel
-        : config.model;
+export function modelForAttempt(_attempt) {
+    return config.model;
 }
 
 /**
@@ -81,10 +69,8 @@ export function formatTime(seconds) {
 
 /**
  * Devuelve una etiqueta descriptiva de los modelos configurados.
- * @returns {string} - Ej: "gpt-5" o "gpt-5 | respaldo: gpt-5-turbo"
+ * @returns {string} - Ej: "gpt-5.4-pro"
  */
 export function modelLabel() {
-    return hasStrongFallback()
-        ? `${config.model} | respaldo: ${config.strongModel}`
-        : config.model;
+    return config.model;
 }

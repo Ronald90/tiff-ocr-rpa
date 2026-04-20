@@ -1,1 +1,3 @@
 Pagina {{pageNum}}.
+
+Transcribe literalmente esta pagina. Devuelve solo el texto visible; usa [ILEGIBLE] para cualquier palabra, numero o caracter dudoso.

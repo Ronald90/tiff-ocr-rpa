@@ -1,1 +1,1 @@
-Localiza el codigo R de esta pagina y responde segun las reglas del sistema.
+Localiza el codigo R de esta pagina. Revisa especialmente sellos ASFI/RECEPCION en la parte inferior derecha y el recuadro "AUTORIDAD DE SUPERVISION ... No. TRAMITE"; despues revisa margenes, encabezado, pie, firmas y anotaciones. Si el codigo esta partido por espacios como R-26 912, une los digitos. Responde solo el codigo normalizado, solo los digitos visibles, o NO_ENCONTRADO.

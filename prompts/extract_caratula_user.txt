@@ -1,3 +1,5 @@
-Texto OCR de la caratula:
+Texto transcrito por Vision de la caratula.
+
+Extrae los campos del esquema de manera conservadora. No completes valores faltantes por contexto.
 
 {{text}}

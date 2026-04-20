@@ -7,7 +7,6 @@ const config = {
     // OpenAI
     apiKey: process.env.OPENAI_API_KEY || '',
     model: process.env.OPENAI_MODEL || '',
-    strongModel: process.env.OPENAI_STRONG_MODEL || process.env.OPENAI_MODEL || '',
 
     // Rendimiento
     concurrency: parseInt(process.env.CONCURRENCY, 10) || 2,

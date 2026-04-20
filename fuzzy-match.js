@@ -33,7 +33,7 @@ const MAX_CODE_DIGIT_DISTANCE = 1;
 
 /**
  * Busca la mejor coincidencia aproximada de una subcadena (query) dentro de un texto más grande.
- * Elimina espacios y puntuación para facilitar la coincidencia de OCR.
+ * Elimina espacios y puntuación para facilitar la coincidencia de transcripciones.
  */
 export function findBestMatchInText(query, text) {
     if (!query || !text) return { found: false, score: 0 };
@@ -84,8 +84,8 @@ export function findBestMatchInText(query, text) {
 export function extractDocCode(docText) {
     if (!docText) return null;
 
-    const match = docText.match(/\bR\s*[-.]?\s*(\d{5,7})\b/i);
-    if (match) return `R-${match[1]}`;
+    const match = docText.match(/\bR\s*[-.]?\s*((?:\d\s*){5,7})\b/i);
+    if (match) return `R-${match[1].replace(/\s+/g, '')}`;
 
     const digitsOnly = docText.match(/\b(\d{5,7})\b/);
     if (digitsOnly) return `R-${digitsOnly[1]}`;
@@ -104,12 +104,12 @@ export function extractDocCode(docText) {
 export function extractRCodes(text) {
     if (!text) return [];
 
-    const regex = /R\s*[-.]?\s*(\d{5,7})/gi;
+    const regex = /R\s*[-.]?\s*((?:\d\s*){5,7})/gi;
     const codes = [];
     let match;
 
     while ((match = regex.exec(text)) !== null) {
-        codes.push(`R-${match[1]}`);
+        codes.push(`R-${match[1].replace(/\s+/g, '')}`);
     }
 
     return [...new Set(codes)];
@@ -118,7 +118,7 @@ export function extractRCodes(text) {
 /**
  * Dado un número identificado por el prompt barato (ej. "R-241594" o "R-24I594"),
  * busca cuál documento de la lista de adjuntos es el match más cercano.
- * @param {string} identifiedNumber — Número identificado en la página (puede tener errores OCR)
+ * @param {string} identifiedNumber — Número identificado en la página (puede tener errores de transcripción)
  * @param {string[]} documentList — Lista de documentos adjuntos completos del extractFields
  * @returns {{ matched: boolean, documento: string|null, code: string|null, score: number }}
  */
@@ -235,7 +235,7 @@ export function findDocumentsInPages(documentTexts, pagesText) {
 /**
  * Busca qué documento de la lista corresponde al texto de una página.
  * Extrae códigos R-XXXXXX del texto y los compara con fuzzy matching.
- * @param {string} pageText — Texto OCR de la página
+ * @param {string} pageText — Texto transcrito de la página
  * @param {string[]} documentList — Lista de documentos adjuntos pendientes
  * @returns {{ matched: boolean, documento: string|null, code: string|null, score: number }}
  */
