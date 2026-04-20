@@ -1,7 +1,7 @@
 {
-  "name": "tiff-ocr-rpa",
+  "name": "tiff-vision-rpa",
   "version": "2.0.0",
-  "description": "RPA para OCR de archivos TIFF multipágina usando el modelo configurado en .env",
+  "description": "RPA para procesar archivos TIFF multipágina con Vision usando el modelo configurado en .env",
   "main": "main.js",
   "type": "module",
   "scripts": {
@@ -15,7 +15,6 @@
     "dotenv": "^16.4.0",
     "openai": "^4.0.0",
     "sharp": "^0.33.0",
-    "tesseract.js": "^7.0.0",
     "undici": "^7.22.0"
   },
   "devDependencies": {

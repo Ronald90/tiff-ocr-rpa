@@ -2,3 +2,5 @@ Pagina {{pageNum}}.
 
 Codigos esperados pendientes:
 {{codes}}
+
+Elige solo el codigo esperado que este visible en esta pagina. Revisa sellos ASFI/RECEPCION de la parte inferior derecha y el recuadro No. TRAMITE. Si los digitos estan separados por espacios, unelos para comparar. Si no hay evidencia visual suficiente, responde NO_ENCONTRADO.

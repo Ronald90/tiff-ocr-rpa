@@ -1,1 +1,3 @@
 Pagina {{pageNum}}.
+
+Transcribe literalmente toda la pagina. Mantén el orden visual de lectura desde la parte superior izquierda hacia abajo, preservando tablas, sellos, firmas, codigos, fechas, montos y anotaciones marginales. Marca cualquier zona dudosa como [ILEGIBLE].

@@ -113,13 +113,11 @@ function normalizeResult(data) {
 }
 
 /**
- * Extrae campos estructurados de la caratula OCR.
- * @param {string} ocrText - Texto OCR de la caratula
- * @param {object} [options] - Opciones de extracción
- * @param {string} [options.model] - Modelo forzado a usar
+ * Extrae campos estructurados de la caratula transcrita por Vision.
+ * @param {string} ocrText - Texto transcrito de la caratula
  * @returns {Promise<object>} - Campos extraidos normalizados
  */
-export async function extractFields(ocrText, options = {}) {
+export async function extractFields(ocrText) {
     if (!ocrText || ocrText.trim().length < 50) {
         logger.warn('[EXTRACT] Texto de caratula demasiado corto para extraer campos');
         return { ...EMPTY_RESULT };
@@ -132,7 +130,7 @@ export async function extractFields(ocrText, options = {}) {
     logger.info(`[EXTRACT] Procesando caratula (${truncated.length} chars de ${ocrText.length} total)`);
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-        const model = modelForAttempt(attempt, options.model);
+        const model = modelForAttempt(attempt);
 
         try {
             const response = await openai.chat.completions.create({

@@ -1,6 +1,8 @@
-# TIFF OCR RPA
+# TIFF Vision RPA
 
-Sistema RPA para procesar archivos TIFF multipágina mediante OCR con el modelo configurado en `.env` y extracción automática de datos estructurados en JSON.
+Sistema RPA para procesar archivos TIFF multipágina mediante Vision con el modelo configurado en `.env` y extracción automática de datos estructurados en JSON.
+
+Modelo recomendado para máxima precisión legal: `OPENAI_MODEL=gpt-5.4-pro`. Todas las páginas se transcriben con Vision usando imágenes con `detail: "high"` y las extracciones estructuradas usan JSON Schema estricto.
 
 ## Requisitos
 
@@ -29,7 +31,7 @@ npm run watch
 ```
 
 Coloca archivos `.tif`/`.tiff` en la carpeta `input/`. El sistema los procesa automáticamente y genera:
-- `output/<nombre>_ocr.txt` — Texto OCR completo
+- `output/<nombre>_vision.txt` — Texto transcrito completo
 - `output/<nombre>_datos.json` — Datos estructurados extraídos
 
 Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
@@ -42,7 +44,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 ├── openai-client.js    Cliente OpenAI compartido
 ├── proxy.js            Proxy corporativo (undici)
 ├── logger.js           Logger async con rotación y stream
-├── ocr-engine.js       Motor OCR (worker pool + reintentos)
+├── ocr-engine.js       Motor Vision (extracción de páginas + reintentos)
 ├── extractor.js        Extracción JSON con IA
 ├── main.js             CLI
 ├── watcher.js          Monitor de carpeta (RPA)
@@ -58,6 +60,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 |---|---|---|
 | `tipo_documento` | string | Clasificación del documento (Circular, Carta Circular, Nota, etc.) |
 | `documento` | string | Línea identificadora completa del documento |
+| `denominacion` | string | Título o denominación visible del cuerpo del documento |
 | `ciudad` | string | Ciudad de emisión |
 | `departamento` | string | Departamento de Bolivia |
 | `fecha` | string | Fecha en formato YYYY-MM-DD |
@@ -67,6 +70,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | `es_sirefo` | boolean | Indica si la carátula menciona SIREFO/SIREFI o el sistema de retención/remisión de fondos |
 | `para_conocimiento` | array | Entidades para conocimiento y cumplimiento |
 | `documentos_adjuntos` | array | Documentos adjuntos listados |
+| `modificaciones` | array | Menciones de modificaciones normativas |
 
 ## Configuración (.env)
 
@@ -74,11 +78,10 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 |---|---|---|
 | `OPENAI_API_KEY` | — | API key de OpenAI (requerida) |
 | `OPENAI_MODEL` | — | Modelo a usar (requerido) |
-| `OPENAI_STRONG_MODEL` | igual a `OPENAI_MODEL` | Modelo fuerte opcional para reintentos críticos cuando la extracción o identificación falla |
 | `CONCURRENCY` | `2` | Páginas procesadas en paralelo por archivo |
 | `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Reintentos por página |
-| `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo de imagen en px (redimensionamiento) |
+| `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo de imagen en px (redimensionamiento). Para documentos legales escaneados se recomienda `4096` si el costo/latencia lo permite |
 | `MAX_FILE_SIZE_MB` | `500` | Tamaño máximo de archivo |
 | `TIMEOUT_PER_PAGE_MS` | `180000` | Timeout por página (3 min) |
 | `WATCH_INTERVAL_MS` | `5000` | Intervalo de polling del watcher |
