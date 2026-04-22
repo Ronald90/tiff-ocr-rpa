@@ -11,29 +11,32 @@ FORMAS POSIBLES:
 - una variante manuscrita donde la R parezca P, K o B
 - solo 5 a 7 digitos cuando la R o el guion no sean visibles pero el numero este asociado al tramite
 
-DONDE BUSCAR, EN ORDEN:
-1. Cerca de CUALQUIER sello ASFI/RECEPCION, especialmente sellos circulares en la parte inferior derecha de la pagina.
-2. Dentro, encima, debajo, al lado o cruzando el anillo del sello ASFI/RECEPCION, incluyendo textos manuscritos sobre el sello.
-3. En el recuadro/sello "AUTORIDAD DE SUPERVISION DEL SISTEMA FINANCIERO No. TRAMITE", a menudo ubicado en la parte inferior o inferior central.
-4. En anotaciones manuscritas o selladas de margenes, encabezado, pie de pagina, firmas o areas entre sellos.
-5. En cualquier zona donde aparezca R-, R., R seguido de digitos, o una secuencia de 5 a 7 digitos vinculada visualmente al sello o tramite.
+ALCANCE DE BUSQUEDA:
+- Revisa TODA la pagina completa, sin asumir una ubicacion preferida.
+- El codigo puede estar en cualquier esquina, margen, encabezado, pie, centro, sello, recuadro, anotacion manuscrita o texto sellado.
+- Revisa tambien dentro, encima, debajo, al lado o cruzando el anillo de cualquier sello ASFI/RECEPCION.
+- Revisa tambien el recuadro/sello "AUTORIDAD DE SUPERVISION DEL SISTEMA FINANCIERO No. TRAMITE" si aparece en cualquier posicion.
+- Revisa cualquier zona donde aparezca R-, R., R seguido de digitos, o una secuencia de 5 a 7 digitos vinculada visualmente al tramite.
 
 REGLAS PARA EVITAR FALSOS POSITIVOS:
-- Prioriza codigos que empiezan con R o estan junto al sello ASFI/RECEPCION.
+- Acepta candidatos en cualquier parte de la pagina si estan visualmente asociados al tramite.
+- Dentro de un mismo sello puede haber una fecha y tambien un codigo R en lineas distintas. No descartes el codigo por compartir sello con una fecha o con la palabra RECEPCION.
 - Ignora CI, NIT, fechas, NUREJ, CUD, telefonos, montos, folios, numeros de pagina y numeros pequenos impresos dentro del anillo del sello.
 - Ignora numeros largos de tramite tipo T-1211407819; aqui solo buscamos el codigo R o sus digitos asociados.
-- Si hay varios candidatos, devuelve el que este mas claramente asociado al sello o anotacion de recepcion ASFI de esta pagina.
+- Si hay varios candidatos, devuelve el que este mas claramente asociado al tramite de esta pagina.
 - Si no puedes separar un codigo de una fecha, CI/NIT u otro numero legal, devuelve NO_ENCONTRADO.
 - No completes digitos por contexto ni por lista mental. Solo usa lo visible.
 - Si el codigo aparece partido por espacios, une los digitos para responder. Ejemplo: R-26 912 -> R-26912.
 - Si el codigo esperado tiene 5 digitos, tambien es valido; no lo descartes por no tener 6 digitos.
 
 CONTROL INTERNO:
-1. Haz una primera pasada para localizar sello/anotacion/candidato.
-2. Haz una segunda pasada especifica por la parte inferior derecha y mitad inferior de la pagina.
-3. Haz una tercera pasada solo sobre los digitos del candidato.
-4. Verifica caracteres parecidos: 0/O, 1/I/l, 2/Z, 3/8, 5/S, 6/G, 8/B, R/P/K.
-5. Si un digito es dudoso y no hay suficiente certeza visual, devuelve NO_ENCONTRADO.
+1. Haz una primera pasada completa de arriba a abajo y de izquierda a derecha sobre toda la pagina.
+2. Haz una segunda pasada completa por bloques: superior izquierda, superior centro, superior derecha, centro izquierda, centro, centro derecha, inferior izquierda, inferior centro e inferior derecha.
+3. Revisa sellos, recuadros, margenes, encabezado, pie y anotaciones sin descartar ninguna zona por su posicion.
+4. Si un sello contiene fecha y posible codigo, separa visualmente la linea de fecha de la linea del posible codigo R.
+5. Haz una ultima pasada solo sobre los digitos del mejor candidato.
+6. Verifica caracteres parecidos: 0/O, 1/I/l, 2/Z, 3/8, 5/S, 6/G, 8/B, R/P/K.
+7. Si un digito es dudoso y no hay suficiente certeza visual, devuelve NO_ENCONTRADO.
 
 RESPUESTA:
 - Si ves claramente la letra R o una variante visual de R junto al numero, devuelve SOLO un codigo normalizado como R-XXXXXX.

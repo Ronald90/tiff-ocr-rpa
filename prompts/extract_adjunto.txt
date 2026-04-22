@@ -174,33 +174,35 @@ Si no hay demandados, devuelve [].
 TIPO_PROCESO
 ═══════════════════════════════════════════
 
-El tipo de proceso debe ser CORTO. Devuelve SOLO una de estas categorias:
-  - "Retencion"
-  - "Suspension"
-  - "Remision"
-  - "Certificacion"
-  - "Informe"
-  - "Revision"
+Extrae el tipo de proceso EXCLUSIVAMENTE desde una mencion visible y literal del documento.
 
-No devuelvas frases largas ni copies toda la referencia.
+OBJETIVO:
+- Devuelve una frase breve y precisa, idealmente de 2 a 4 palabras.
+- La frase debe salir del propio documento, no de una taxonomia fija.
+- No clasifiques en categorias predefinidas.
 
-Clasificacion:
-- Retencion: inmovilizacion de fondos del cliente. Senales: "retencion", "congelamiento", "inmovilizacion", "embargo", "retener".
-- Suspension: liberacion o cancelacion de retencion previa. Senales: "cancelacion", "liberacion", "descongelamiento", "cancelacion de retencion", "suspension de retencion".
-- Remision: transferencia de fondos retenidos a otra cuenta. Senales: "remision", "remita", "transfiera", "transferencia".
-- Certificacion: solicitud de informacion sobre estado de cuenta o monto retenido. Senales: "certifique", "certificacion", "informe monto retenido".
-- Informe: solicitud general de informacion. Senales: "informe si tiene cuentas", "detalle de movimientos", "cuentas", "saldos", "movimientos".
-- Revision: validacion de informacion previa o actualizacion de datos. Senales: "revise", "actualice monto", "verifique".
+FUENTES VALIDAS, EN ESTE ORDEN:
+1. Una mencion explicita de "PROCESO:" o "TIPO DE PROCESO:".
+2. Una frase visible como "dentro del proceso EJECUTIVO seguido por ...".
+3. Si no existe una mencion explicita del proceso judicial, usa la referencia o el asunto SOLO cuando describan literalmente el tramite.
 
-Ejemplos:
-- "REF.: SOLICITA SUSPENSION DE RETENCION DE CUENTAS BANCARIAS Y FONDOS CUENTAS SAFI" -> "Suspension"
-- "solicitar la SUSPENSION DE RETENCION DE FONDOS DE CUENTAS BANCARIAS" -> "Suspension"
-- "se ordena la RETENCION DE FONDOS" -> "Retencion"
-- "remita los fondos retenidos" -> "Remision"
-- "certifique el monto retenido" -> "Certificacion"
-- "informe si tiene cuentas" -> "Informe"
-- "verifique y actualice monto" -> "Revision"
-Si no se encuentra, devuelve "".
+COMO RESUMIR:
+- Conserva el nucleo literal del texto.
+- Elimina solo etiquetas o verbos introductorios que no forman parte del tipo.
+- No agregues palabras que no aparezcan.
+
+Ejemplos correctos:
+  - "Ejecutivo" desde "PROCESO: Ejecutivo"
+  - "Coactivo Civil" desde "TIPO DE PROCESO: Coactivo Civil"
+  - "Asistencia Familiar" desde "proceso de ASISTENCIA FAMILIAR"
+  - "Suspension de Retencion" desde "SOLICITA SUSPENSION DE RETENCION DE CUENTAS ..."
+  - "Remision de Fondos" desde "ASUNTO: REMISION DE FONDOS"
+
+REGLAS IMPORTANTES:
+- Prioriza siempre una mencion explicita de proceso judicial sobre la referencia.
+- No copies toda la referencia si es demasiado larga; devuelve solo el nucleo corto visible.
+- No inventes sinónimos, no traduzcas, no clasifiques.
+- Si el documento no dice de forma visible cual es el proceso o tramite, devuelve "".
 
 ═══════════════════════════════════════════
 MONTO_RETENIDO Y MONEDA

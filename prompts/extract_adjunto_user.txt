@@ -1,5 +1,5 @@
 Texto transcrito por Vision del documento adjunto.
 
-Extrae los campos del esquema de manera conservadora. No completes nombres, numeros, fechas ni montos por contexto. Para tipo_proceso devuelve solo una categoria corta: Retencion, Suspension, Remision, Certificacion, Informe o Revision. Para nro_cite acepta codigos institucionales como DSALR-CE-024. Para moneda usa solo BOB, USD, UFV o "".
+Extrae los campos del esquema de manera conservadora. No completes nombres, numeros, fechas ni montos por contexto. Para tipo_proceso devuelve una frase corta sustentada por el documento, idealmente de 2 a 4 palabras: prioriza "PROCESO: ..." o "dentro del proceso ..."; si eso no existe, usa la referencia solo para resumir el nucleo literal del tramite, por ejemplo "Suspension de Retencion" o "Remision de Fondos". No uses categorias fijas ni inventes sinonimos. Para nro_cite acepta codigos institucionales como DSALR-CE-024. Para moneda usa solo BOB, USD, UFV o "".
 
 {{text}}

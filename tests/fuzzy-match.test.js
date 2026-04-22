@@ -5,7 +5,11 @@ import {
     extractDocCode,
     extractRCodes,
     findBestMatchInText,
-    matchPageWithDocuments
+    matchPageWithDocuments,
+    extractDocDateKey,
+    extractPageDateKeys,
+    extractLooseCodeCandidates,
+    matchPageWithDocumentsByContext
 } from '../fuzzy-match.js';
 
 // ── extractDocCode ────────────────────────────────────────────────────
@@ -192,6 +196,12 @@ describe('matchSingleNumber', () => {
         // Ambiguous → no matched
         assert.equal(result.matched, false);
     });
+
+    it('match con una cifra faltante permitiendo diferencia de longitud controlada', () => {
+        const result = matchSingleNumber('25822', ['R-258122 DE 07 DE NOVIEMBRE DE 2025'], { maxLengthDelta: 1 });
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-258122');
+    });
 });
 
 // ── matchPageWithDocuments ─────────────────────────────────────────────
@@ -211,5 +221,39 @@ describe('matchPageWithDocuments', () => {
     it('no encuentra código en texto sin R-', () => {
         const result = matchPageWithDocuments('Sin codigo relevante', docs);
         assert.equal(result.matched, false);
+    });
+});
+
+describe('context-aware page matching', () => {
+    it('extrae fecha de documento adjunto', () => {
+        assert.equal(extractDocDateKey('R-258122 DE 07 DE NOVIEMBRE DE 2025'), '2025-11-07');
+    });
+
+    it('extrae fechas visibles desde OCR de pagina', () => {
+        const dates = extractPageDateKeys('ASFI\n07 NOV 2025\nLa Paz, 15 de octubre de 2025');
+        assert.deepEqual(dates.sort(), ['2025-10-15', '2025-11-07']);
+    });
+
+    it('extrae candidatos flexibles desde el sello ASFI', () => {
+        const candidates = extractLooseCodeCandidates('ASFI\n07 NOV 2025\n258/22\nLP');
+        assert.deepEqual(candidates, ['25822']);
+    });
+
+    it('recupera R-258122 desde OCR con fecha y codigo parcial del sello', () => {
+        const pageText = [
+            'ASFI',
+            '07 NOV 2025',
+            '258/22',
+            'LP',
+            'La Paz, 15 de octubre de 2025.'
+        ].join('\n');
+        const docs = [
+            'R-258122 DE 07 DE NOVIEMBRE DE 2025',
+            'R-262479 DE 12 DE NOVIEMBRE DE 2025'
+        ];
+
+        const result = matchPageWithDocumentsByContext(pageText, docs);
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-258122');
     });
 });
