@@ -30,6 +30,90 @@ function normalize(str) {
 }
 
 const MAX_CODE_DIGIT_DISTANCE = 1;
+const SPANISH_MONTHS = {
+    ENE: '01',
+    ENERO: '01',
+    FEB: '02',
+    FEBRERO: '02',
+    MAR: '03',
+    MARZO: '03',
+    ABR: '04',
+    ABRIL: '04',
+    MAY: '05',
+    MAYO: '05',
+    JUN: '06',
+    JUNIO: '06',
+    JUL: '07',
+    JULIO: '07',
+    AGO: '08',
+    AGOSTO: '08',
+    SEP: '09',
+    SEPT: '09',
+    SEPTIEMBRE: '09',
+    SET: '09',
+    SETIEMBRE: '09',
+    OCT: '10',
+    OCTUBRE: '10',
+    NOV: '11',
+    NOVIEMBRE: '11',
+    DIC: '12',
+    DICIEMBRE: '12'
+};
+
+function normalizeMonthToken(token = '') {
+    const upper = token
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^A-Z]/gi, '')
+        .toUpperCase();
+
+    return SPANISH_MONTHS[upper] || '';
+}
+
+function normalizeYearToken(token = '') {
+    const digits = String(token).replace(/\D/g, '');
+    if (digits.length === 4) return digits;
+    if (digits.length === 2) return `20${digits}`;
+    return '';
+}
+
+function buildDateKey(dayToken, monthToken, yearToken) {
+    const day = String(dayToken).replace(/\D/g, '').padStart(2, '0');
+    const month = normalizeMonthToken(monthToken);
+    const year = normalizeYearToken(yearToken);
+
+    if (!day || !month || !year) return '';
+    return `${year}-${month}-${day}`;
+}
+
+function normalizeLooseCodeCandidate(raw = '') {
+    return raw
+        .toUpperCase()
+        .replace(/^[RPKBH]\s*[-–—./]?\s*/i, '')
+        .replace(/[I|L]/g, '1')
+        .replace(/[OQ]/g, '0')
+        .replace(/S/g, '5')
+        .replace(/\D/g, '');
+}
+
+function collectLooseCodeCandidatesFromLines(lines) {
+    const seen = new Set();
+    const candidates = [];
+    const regex = /(?:[RrPpKkBbHh]\s*[-–—./]?\s*)?(?:[0-9Iil|/\\]\s*){5,8}/g;
+
+    for (const line of lines) {
+        const matches = line.match(regex) || [];
+        for (const match of matches) {
+            const normalized = normalizeLooseCodeCandidate(match);
+            if (normalized.length < 5 || normalized.length > 7) continue;
+            if (seen.has(normalized)) continue;
+            seen.add(normalized);
+            candidates.push(normalized);
+        }
+    }
+
+    return candidates;
+}
 
 /**
  * Busca la mejor coincidencia aproximada de una subcadena (query) dentro de un texto más grande.
@@ -122,10 +206,17 @@ export function extractRCodes(text) {
  * @param {string[]} documentList — Lista de documentos adjuntos completos del extractFields
  * @returns {{ matched: boolean, documento: string|null, code: string|null, score: number }}
  */
-export function matchSingleNumber(identifiedNumber, documentList) {
+export function matchSingleNumber(identifiedNumber, documentList, options = {}) {
     if (!identifiedNumber || !documentList || documentList.length === 0) {
         return { matched: false, documento: null, code: null, score: 0 };
     }
+
+    const maxDigitDistance = Number.isInteger(options.maxDigitDistance)
+        ? options.maxDigitDistance
+        : MAX_CODE_DIGIT_DISTANCE;
+    const maxLengthDelta = Number.isInteger(options.maxLengthDelta)
+        ? options.maxLengthDelta
+        : 0;
 
     // Pre-normalizar el código identificado: convertir prefijos manuscritos comunes a R-
     let normalizedIdentified = identifiedNumber.trim();
@@ -160,7 +251,7 @@ export function matchSingleNumber(identifiedNumber, documentList) {
 
         for (const cleanIdentified of uniqueVariants) {
             const identifiedDigits = cleanIdentified.replace(/\D/g, '');
-            if (identifiedDigits.length !== codeDigits.length) {
+            if (Math.abs(identifiedDigits.length - codeDigits.length) > maxLengthDelta) {
                 continue;
             }
 
@@ -174,7 +265,7 @@ export function matchSingleNumber(identifiedNumber, documentList) {
                 const dist = levenshteinDistance(cleanIdentified, cleanTarget);
                 const maxLen = Math.max(cleanIdentified.length, cleanTarget.length);
                 const score = maxLen === 0 ? 0 : Math.max(0, 1 - (dist / maxLen));
-                const validScore = dist <= MAX_CODE_DIGIT_DISTANCE;
+                const validScore = dist <= maxDigitDistance;
 
                 if (validScore && (score > bestScore || (score === bestScore && dist < bestDistance))) {
                     bestScore = score;
@@ -252,6 +343,119 @@ export function matchPageWithDocuments(pageText, documentList) {
         const result = matchSingleNumber(code, documentList);
         if (result.matched && result.score > bestResult.score) {
             bestResult = result;
+        }
+    }
+
+    return bestResult;
+}
+
+/**
+ * Extrae la fecha del documento adjunto listada en carátula.
+ * Ejemplo: "R-258122 DE 07 DE NOVIEMBRE DE 2025" -> "2025-11-07"
+ * @param {string} docText
+ * @returns {string}
+ */
+export function extractDocDateKey(docText) {
+    if (!docText) return '';
+
+    const match = docText.match(/\bDE\s+(\d{1,2})\s+DE\s+([A-ZÁÉÍÓÚÑ.]+)\s+DE\s+(\d{2,4})\b/i);
+    if (!match) return '';
+
+    return buildDateKey(match[1], match[2], match[3]);
+}
+
+/**
+ * Extrae fechas visibles del texto OCR de una página.
+ * Soporta formatos como "07 NOV 2025", "7 NOV 25" o "15 de octubre de 2025".
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function extractPageDateKeys(text) {
+    if (!text) return [];
+
+    const results = new Set();
+    const regex = /\b(\d{1,2})\s*(?:DE\s+)?([A-ZÁÉÍÓÚÑ.]{3,15})\s*(?:DE\s+)?(\d{2,4})\b/gi;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+        const key = buildDateKey(match[1], match[2], match[3]);
+        if (key) results.add(key);
+    }
+
+    return [...results];
+}
+
+/**
+ * Extrae candidatos de código flexibles desde el OCR de la página, tolerando
+ * separadores o caracteres ambiguos como "/" leídos dentro del sello.
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function extractLooseCodeCandidates(text) {
+    if (!text) return [];
+
+    const lines = text
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean);
+
+    const focusIndexes = lines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => /ASFI|RECEPCION|RECEPCIÓN|TRAMITE|TRÁMITE|AUTORIDAD DE SUPERVISION/i.test(line))
+        .map(({ index }) => index);
+
+    const focusedLines = [];
+    for (const index of focusIndexes) {
+        for (let offset = -1; offset <= 3; offset++) {
+            const candidateLine = lines[index + offset];
+            if (candidateLine) focusedLines.push(candidateLine);
+        }
+    }
+
+    const focusedCandidates = collectLooseCodeCandidatesFromLines(focusedLines);
+    if (focusedCandidates.length > 0) {
+        return focusedCandidates;
+    }
+
+    return collectLooseCodeCandidatesFromLines(lines);
+}
+
+/**
+ * Busca un match usando contexto OCR de página: fechas visibles + candidatos
+ * de código flexibles alrededor de sellos y recuadros.
+ * @param {string} pageText
+ * @param {string[]} documentList
+ * @returns {{ matched: boolean, documento: string|null, code: string|null, score: number }}
+ */
+export function matchPageWithDocumentsByContext(pageText, documentList) {
+    if (!pageText || !documentList || documentList.length === 0) {
+        return { matched: false, documento: null, code: null, score: 0 };
+    }
+
+    const pageDates = new Set(extractPageDateKeys(pageText));
+    const docsWithDate = pageDates.size > 0
+        ? documentList.filter(doc => pageDates.has(extractDocDateKey(doc)))
+        : [];
+
+    const pools = docsWithDate.length > 0 ? [docsWithDate, documentList] : [documentList];
+    const candidates = extractLooseCodeCandidates(pageText);
+
+    let bestResult = { matched: false, documento: null, code: null, score: 0 };
+    let bestAdjustedScore = 0;
+
+    for (const pool of pools) {
+        for (const candidate of candidates) {
+            const result = matchSingleNumber(candidate, pool, { maxLengthDelta: 1, maxDigitDistance: 1 });
+            if (!result.matched) continue;
+
+            const docDate = extractDocDateKey(result.documento);
+            const dateBonus = docDate && pageDates.has(docDate) ? 0.1 : 0;
+            const adjustedScore = result.score + dateBonus;
+
+            if (adjustedScore > bestAdjustedScore) {
+                bestAdjustedScore = adjustedScore;
+                bestResult = result;
+            }
         }
     }
 

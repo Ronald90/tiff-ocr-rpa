@@ -5,8 +5,10 @@ Tu tarea es elegir el codigo visible en la imagen SOLO desde una lista de codigo
 REGLAS:
 - Busca codigos con formato R-XXXXX, R-XXXXXX o variantes visuales equivalentes con 5 a 7 digitos.
 - El codigo puede estar manuscrito, sellado, impreso, parcialmente sobre un sello ASFI, cerca de firmas, en margenes, encabezado o pie de pagina.
-- Prioriza codigos cerca del sello ASFI/RECEPCION, especialmente sellos circulares en la parte inferior derecha.
-- Revisa tambien el recuadro/sello "AUTORIDAD DE SUPERVISION DEL SISTEMA FINANCIERO No. TRAMITE", incluso si esta en la parte inferior central.
+- Revisa TODA la pagina completa sin prioridades de ubicacion.
+- El candidato puede estar en cualquier esquina, margen, encabezado, pie, centro, sello, recuadro o anotacion manuscrita.
+- Revisa tambien cualquier sello ASFI/RECEPCION y cualquier recuadro/sello "AUTORIDAD DE SUPERVISION DEL SISTEMA FINANCIERO No. TRAMITE" en cualquier posicion.
+- Dentro de un mismo sello puede haber una fecha y tambien un codigo R en lineas distintas. No descartes el codigo por compartir sello con una fecha o con la palabra RECEPCION.
 - Compara por digitos visibles. Si la imagen muestra solo los digitos sin R, elige el codigo esperado correspondiente solo si esos digitos son visualmente compatibles.
 - Si los digitos aparecen separados por espacios, unelos mentalmente para comparar. Ejemplo: R-26 912 equivale a R-26912.
 - Usa aproximacion controlada solo para errores visuales razonables: 3/8, 0/6, 1/7, 5/S, 8/B, R/P/K.
@@ -18,10 +20,11 @@ REGLAS:
 - No devuelvas codigos que no esten en la lista.
 
 CONTROL INTERNO:
-1. Ubica el candidato en el documento.
-2. Revisa especificamente la mitad inferior, el sello circular inferior derecho y el recuadro No. TRAMITE.
-3. Verifica cada digito contra la lista esperada.
-4. Rechaza coincidencias que puedan ser CI/NIT, fecha, NUREJ, CUD, monto o pagina.
+1. Haz un barrido completo de toda la pagina.
+2. Revisa la pagina por bloques: superior izquierda, superior centro, superior derecha, centro izquierda, centro, centro derecha, inferior izquierda, inferior centro e inferior derecha.
+3. Si un sello contiene fecha y posible codigo, separa visualmente la linea de fecha de la linea del posible codigo R.
+4. Verifica cada digito contra la lista esperada.
+5. Rechaza coincidencias que puedan ser CI/NIT, fecha, NUREJ, CUD, monto o pagina.
 
 RESPUESTA:
 - Devuelve solo un codigo de la lista esperada o NO_ENCONTRADO.

@@ -6,7 +6,13 @@ import logger from './logger.js';
 import openai from './openai-client.js';
 import { extractFields } from './extractor.js';
 import { extractAdjuntoFields } from './adjunto-extractor.js';
-import { matchSingleNumber, extractDocCode } from './fuzzy-match.js';
+import {
+    matchSingleNumber,
+    extractDocCode,
+    matchPageWithDocumentsByContext,
+    extractDocDateKey,
+    extractPageDateKeys
+} from './fuzzy-match.js';
 import { sleep, renderPrompt, modelLabel, formatTime } from './utils.js';
 
 // ── Constantes ────────────────────────────────────────────────────────
@@ -20,13 +26,22 @@ const ASFI_CROP_FRACTION = 0.40;
 /** Fracción superior para franja superior estándar */
 const TOP_STRIP_FRACTION = 0.36;
 
-/** Regiones de recorte para búsqueda multi-pass de código */
+/** Regiones de recorte para búsqueda exhaustiva de código */
 const CROP_REGIONS = {
-    topRight: { left: 0.48, top: 0, width: 0.52, height: 0.34 },
-    topCenterRight: { left: 0.34, top: 0, width: 0.66, height: 0.36 },
-    bottomRight: { left: 0.52, top: 0.52, width: 0.48, height: 0.48 },
-    bottomCenterRight: { left: 0.25, top: 0.52, width: 0.75, height: 0.48 },
-    lowerHalf: { left: 0, top: 0.48, width: 1, height: 0.52 }
+    topLeft: { left: 0, top: 0, width: 0.55, height: 0.42 },
+    topCenter: { left: 0.22, top: 0, width: 0.56, height: 0.42 },
+    topRight: { left: 0.45, top: 0, width: 0.55, height: 0.42 },
+    middleLeft: { left: 0, top: 0.24, width: 0.55, height: 0.42 },
+    middleCenter: { left: 0.22, top: 0.24, width: 0.56, height: 0.42 },
+    middleRight: { left: 0.45, top: 0.24, width: 0.55, height: 0.42 },
+    bottomLeft: { left: 0, top: 0.58, width: 0.55, height: 0.42 },
+    bottomCenter: { left: 0.22, top: 0.58, width: 0.56, height: 0.42 },
+    bottomRight: { left: 0.45, top: 0.58, width: 0.55, height: 0.42 },
+    leftHalf: { left: 0, top: 0, width: 0.54, height: 1 },
+    rightHalf: { left: 0.46, top: 0, width: 0.54, height: 1 },
+    upperHalf: { left: 0, top: 0, width: 1, height: 0.54 },
+    lowerHalf: { left: 0, top: 0.46, width: 1, height: 0.54 },
+    centerBand: { left: 0.15, top: 0.15, width: 0.70, height: 0.70 }
 };
 
 /** Timeout para identificación rápida de documento (ms) */
@@ -45,8 +60,8 @@ const HANDWRITING_CONTRAST = 1.5;
 const REFUSAL_MAX_LENGTH = 200;
 
 /** Máximo de llamadas API por página antes de abandonar la identificación.
- *  Controla la cascada de reintentos para no desperdiciar créditos. */
-const MAX_API_CALLS_PER_PAGE = 10;
+ *  Se elevó para permitir una búsqueda más exhaustiva en documentos legales. */
+const MAX_API_CALLS_PER_PAGE = 18;
 
 /** Máximo de páginas previas a buscar en fallback de campos críticos */
 const MAX_PREV_PAGES_FALLBACK = 2;
@@ -167,6 +182,50 @@ function isSuspiciousAdjunto(adjunto = '') {
  */
 function countSuspiciousAdjuntos(adjuntos = []) {
     return adjuntos.filter(isSuspiciousAdjunto).length;
+}
+
+/**
+ * Revalida el match de una página usando la transcripción OCR completa.
+ * Corrige falsos positivos del modo "lista esperada" si el OCR de la página
+ * sugiere otro código pendiente con mejor soporte visual.
+ * @param {{ matched: boolean, documento: string|null, code: string|null, score: number }} matchResult
+ * @param {string} visionText
+ * @param {string[]} pendingAdjuntos
+ * @returns {{ matched: boolean, documento: string|null, code: string|null, score: number }}
+ */
+function reconcileMatchWithVisionText(matchResult, visionText, pendingAdjuntos) {
+    if (!visionText || !pendingAdjuntos || pendingAdjuntos.length === 0) {
+        return matchResult;
+    }
+
+    const contextMatch = matchPageWithDocumentsByContext(visionText, pendingAdjuntos);
+    if (!contextMatch.matched) {
+        return matchResult;
+    }
+
+    if (!matchResult.matched) {
+        return contextMatch;
+    }
+
+    if (contextMatch.code === matchResult.code) {
+        return matchResult;
+    }
+
+    const pageDates = new Set(extractPageDateKeys(visionText));
+    const currentDate = extractDocDateKey(matchResult.documento);
+    const contextDate = extractDocDateKey(contextMatch.documento);
+    const currentDateMatches = currentDate ? pageDates.has(currentDate) : false;
+    const contextDateMatches = contextDate ? pageDates.has(contextDate) : false;
+
+    if (contextDateMatches && !currentDateMatches) {
+        return contextMatch;
+    }
+
+    if (contextDateMatches === currentDateMatches && contextMatch.score > matchResult.score) {
+        return contextMatch;
+    }
+
+    return matchResult;
 }
 
 // ── Transcripcion completa con Vision ─────────────────────────────────
@@ -477,7 +536,7 @@ async function identifyExpectedDocNumber(pngBuffer, pageNum, documentList) {
 }
 
 /**
- * Búsqueda multi-pass: prueba múltiples vistas de la página para encontrar el código.
+ * Búsqueda exhaustiva: prueba múltiples vistas solapadas de la página para encontrar el código.
  * @param {Buffer} pngBuffer - Buffer PNG de la página
  * @param {number} pageNum - Número de página
  * @param {string[]} documentList - Lista de documentos adjuntos pendientes
@@ -488,25 +547,46 @@ async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentLi
     const views = [
         { label: 'pagina completa', create: async () => pngBuffer },
         { label: 'franja superior', create: async () => cropTopSection(pngBuffer, TOP_STRIP_FRACTION) },
+        { label: 'mitad izquierda', create: async () => cropRegion(pngBuffer, CROP_REGIONS.leftHalf) },
+        { label: 'mitad derecha', create: async () => cropRegion(pngBuffer, CROP_REGIONS.rightHalf) },
+        { label: 'mitad superior', create: async () => cropRegion(pngBuffer, CROP_REGIONS.upperHalf) },
+        { label: 'mitad inferior', create: async () => cropRegion(pngBuffer, CROP_REGIONS.lowerHalf) },
+        { label: 'banda central', create: async () => cropRegion(pngBuffer, CROP_REGIONS.centerBand) },
+        {
+            label: 'zona superior izquierda',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topLeft)
+        },
+        {
+            label: 'zona superior central',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topCenter)
+        },
         {
             label: 'zona superior derecha',
             create: async () => cropRegion(pngBuffer, CROP_REGIONS.topRight)
         },
         {
-            label: 'zona superior central-derecha',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topCenterRight)
+            label: 'zona central izquierda',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.middleLeft)
+        },
+        {
+            label: 'zona central',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.middleCenter)
+        },
+        {
+            label: 'zona central derecha',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.middleRight)
+        },
+        {
+            label: 'zona inferior izquierda',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.bottomLeft)
+        },
+        {
+            label: 'zona inferior central',
+            create: async () => cropRegion(pngBuffer, CROP_REGIONS.bottomCenter)
         },
         {
             label: 'zona inferior derecha',
             create: async () => cropRegion(pngBuffer, CROP_REGIONS.bottomRight)
-        },
-        {
-            label: 'zona inferior central-derecha',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.bottomCenterRight)
-        },
-        {
-            label: 'mitad inferior',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.lowerHalf)
         }
     ];
 
@@ -548,8 +628,8 @@ async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentLi
  *   1. identifyDocNumber (prompt principal)
  *   2. identifyDocNumberRetry (prompt minimalista)
  *   3. Imagen mejorada + identifyDocNumber
- *   4. Crops ASFI + enhanced + identifyDocNumber
- *   5. identifyExpectedDocNumberMultiPass (búsqueda dirigida)
+ *   4. Crops amplios + enhanced + identifyDocNumber
+ *   5. identifyExpectedDocNumberMultiPass (barrido exhaustivo dirigido)
  *
  * @param {Buffer} pngBuffer - Buffer PNG de la página
  * @param {number} pageNum - Número de página
@@ -595,9 +675,9 @@ async function identifyPageCode(pngBuffer, pageNum, pendingAdjuntos) {
         );
         if (result) return result;
 
-        // Paso 4A: Crop ASFI superior + enhanced
+        // Paso 4A: Franja superior + enhanced
         if (apiCalls < budget) {
-            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con crop zona ASFI superior + enhanced...`);
+            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con franja superior + enhanced...`);
             const croppedBuffer = await cropTopSection(pngBuffer, ASFI_CROP_FRACTION);
             const enhancedCrop = await enhanceForHandwriting(croppedBuffer);
             result = await withBudget(
@@ -607,26 +687,26 @@ async function identifyPageCode(pngBuffer, pageNum, pendingAdjuntos) {
             if (result) return result;
         }
 
-        // Paso 4B: Crop ASFI inferior derecho + enhanced
+        // Paso 4B: Mitad izquierda + enhanced
         if (apiCalls < budget) {
-            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con crop zona ASFI inferior derecha + enhanced...`);
-            const croppedBottom = await cropRegion(pngBuffer, CROP_REGIONS.bottomRight);
-            const enhancedBottom = await enhanceForHandwriting(croppedBottom);
+            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con mitad izquierda + enhanced...`);
+            const croppedLeftHalf = await cropRegion(pngBuffer, CROP_REGIONS.leftHalf);
+            const enhancedLeftHalf = await enhanceForHandwriting(croppedLeftHalf);
             result = await withBudget(
-                () => identifyDocNumber(enhancedBottom, pageNum),
-                'identifyDocNumber(cropBottomRight+enhanced)'
+                () => identifyDocNumber(enhancedLeftHalf, pageNum),
+                'identifyDocNumber(leftHalf+enhanced)'
             );
             if (result) return result;
         }
 
-        // Paso 4C: Crop mitad inferior + enhanced
+        // Paso 4C: Mitad derecha + enhanced
         if (apiCalls < budget) {
-            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con crop mitad inferior + enhanced...`);
-            const croppedLower = await cropRegion(pngBuffer, CROP_REGIONS.lowerHalf);
-            const enhancedLower = await enhanceForHandwriting(croppedLower);
+            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con mitad derecha + enhanced...`);
+            const croppedRightHalf = await cropRegion(pngBuffer, CROP_REGIONS.rightHalf);
+            const enhancedRightHalf = await enhanceForHandwriting(croppedRightHalf);
             result = await withBudget(
-                () => identifyDocNumber(enhancedLower, pageNum),
-                'identifyDocNumber(lowerHalf+enhanced)'
+                () => identifyDocNumber(enhancedRightHalf, pageNum),
+                'identifyDocNumber(rightHalf+enhanced)'
             );
             if (result) return result;
         }
@@ -635,11 +715,11 @@ async function identifyPageCode(pngBuffer, pageNum, pendingAdjuntos) {
         logger.warn(`  [ENHANCE] Error en preprocesamiento pagina ${pageNum}: ${enhanceErr.message}`);
     }
 
-    // Paso 5: Búsqueda dirigida con códigos pendientes
+    // Paso 5: Barrido exhaustivo dirigido con códigos pendientes
     if (apiCalls < budget) {
-        logger.info(`  [RETRY] Pagina ${pageNum} - Busqueda dirigida con codigos pendientes...`);
+        logger.info(`  [RETRY] Pagina ${pageNum} - Barrido exhaustivo con codigos pendientes...`);
         result = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos);
-        apiCalls += 5; // multipass consume ~5 llamadas
+        apiCalls += 17; // barrido exhaustivo consume multiples vistas de la pagina
         if (result) return result;
     }
 
@@ -812,17 +892,24 @@ export async function processFile(tiffPath, outputDir) {
                     continue;
                 }
 
-                logger.info(`  [MATCH] Pagina ${pageNum} <-> ${matchResult.code} (confianza: ${(matchResult.score * 100).toFixed(0)}%)`);
-                matchedCodes.add(matchResult.code);
-
-                pendingAdjuntos = pendingAdjuntos.filter(doc => extractDocCode(doc) !== matchResult.code);
-                logger.info(`  [INFO] Codigo "${matchResult.code}" removido de la lista de busqueda. Faltan ${pendingAdjuntos.length} codigos.`);
-
                 // Paso 3: Vision de esta pagina
                 logger.info(`  [VISION] Transcribiendo pagina ${pageNum}/${numPages} (${sizeKB} KB)...`);
                 const visionText = (await transcribeWithVision(pngBuffer, pageNum)) || '';
                 allText.push(visionText);
                 successCount++;
+
+                const reconciledMatch = reconcileMatchWithVisionText(matchResult, visionText, pendingAdjuntos);
+                if (reconciledMatch.matched && reconciledMatch.code !== matchResult.code) {
+                    logger.info(`  [RECONCILE] Pagina ${pageNum}/${numPages} - Codigo corregido por OCR: ${matchResult.code} -> ${reconciledMatch.code}`);
+                    matchResult = reconciledMatch;
+                    identifiedNumber = reconciledMatch.code;
+                }
+
+                logger.info(`  [MATCH] Pagina ${pageNum} <-> ${matchResult.code} (confianza: ${(matchResult.score * 100).toFixed(0)}%)`);
+                matchedCodes.add(matchResult.code);
+
+                pendingAdjuntos = pendingAdjuntos.filter(doc => extractDocCode(doc) !== matchResult.code);
+                logger.info(`  [INFO] Codigo "${matchResult.code}" removido de la lista de busqueda. Faltan ${pendingAdjuntos.length} codigos.`);
 
                 // Paso 3B: Intentar extracción con solo la página actual primero
                 let extractionText = visionText;

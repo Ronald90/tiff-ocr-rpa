@@ -5,7 +5,7 @@ import logger from './logger.js';
 import openai from './openai-client.js';
 import { sleep, renderPrompt, modelForAttempt, safeJsonParse } from './utils.js';
 
-const MAX_EXTRACT_CHARS = 8000;
+const MAX_EXTRACT_CHARS = 24000;
 
 const EMPTY_RESULT = {
     tipo_documento: '',
@@ -78,12 +78,42 @@ const CARATULA_RESPONSE_FORMAT = {
 const EXTRACTION_PROMPT = fs.readFileSync(path.resolve('./prompts/extract_caratula.txt'), 'utf-8');
 const EXTRACTION_USER_PROMPT = fs.readFileSync(path.resolve('./prompts/extract_caratula_user.txt'), 'utf-8');
 
+function normalizeSearchText(text = '') {
+    return String(text)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+/**
+ * Determina si la caratula menciona de forma explicita el sistema SIREFO/SIREFI.
+ * Evita falsos positivos por menciones normativas genericas a retencion/suspension/remision.
+ * @param {string} ocrText
+ * @returns {boolean}
+ */
+export function detectEsSirefo(ocrText = '') {
+    const text = normalizeSearchText(ocrText);
+    if (!text) return false;
+
+    const explicitSignals = [
+        /\bsirefo\b/,
+        /\bsirefi\b/,
+        /\bsistema de (administracion|transmision) de orden(?:es)? de retencion,\s*suspension de retencion y remision de fondos\b/,
+        /\bmediante el sistema de (administracion|transmision) de orden(?:es)? de retencion,\s*suspension de retencion y remision de fondos\b/
+    ];
+
+    return explicitSignals.some(pattern => pattern.test(text));
+}
+
 /**
  * Garantiza que el resultado tenga todos los campos esperados
  * @param {object} data - Datos crudos del modelo
+ * @param {string} [ocrText] - Texto transcrito original
  * @returns {object} - Resultado normalizado con todos los campos
  */
-function normalizeResult(data) {
+function normalizeResult(data, ocrText = '') {
     const result = { ...EMPTY_RESULT };
 
     if (!data || typeof data !== 'object') {
@@ -108,6 +138,8 @@ function normalizeResult(data) {
             result[key] = data[key];
         }
     }
+
+    result.es_sirefo = detectEsSirefo(ocrText);
 
     return result;
 }
@@ -156,7 +188,10 @@ export async function extractFields(ocrText) {
                 throw new Error('JSON invalido devuelto por el modelo');
             }
 
-            const normalized = normalizeResult(parsed);
+            const normalized = normalizeResult(parsed, ocrText);
+            if (typeof parsed.es_sirefo === 'boolean' && parsed.es_sirefo !== normalized.es_sirefo) {
+                logger.info(`[EXTRACT] es_sirefo ajustado por regla deterministica: ${parsed.es_sirefo} -> ${normalized.es_sirefo}`);
+            }
             logger.success(`[EXTRACT] Campos de caratula extraidos correctamente con ${model}`);
             return normalized;
         } catch (err) {

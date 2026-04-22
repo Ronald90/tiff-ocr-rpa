@@ -58,10 +58,7 @@ const ADJUNTO_RESPONSE_FORMAT = {
                         ]
                     }
                 },
-                tipo_proceso: {
-                    type: 'string',
-                    enum: ['', 'Retencion', 'Suspension', 'Remision', 'Certificacion', 'Informe', 'Revision']
-                },
+                tipo_proceso: { type: 'string' },
                 monto_retenido: { type: 'string' },
                 moneda: { type: 'string', enum: ['', 'BOB', 'USD', 'UFV'] },
                 tipo_documento_respaldo: { type: 'string' },
@@ -128,96 +125,66 @@ function extractNroCiteFallback(ocrText) {
     return '';
 }
 
-/**
- * Clasifica el tipo de proceso en una etiqueta corta.
- * @param {string} text - Texto a clasificar
- * @returns {string} - Tipo de proceso corto o cadena vacía
- */
-function classifyTipoProceso(text) {
-    if (!text) return '';
+function cleanTipoProcesoCandidate(value = '') {
+    const cleaned = String(value)
+        .replace(/\s+/g, ' ')
+        .replace(/^[\s:.;,\-]+/, '')
+        .replace(/^(?:tipo\s+de\s+)?proceso\s*[:.-]?\s*/i, '')
+        .replace(/^dentro\s+del\s+proceso\s+/i, '')
+        .replace(/^proceso\s+de\s+/i, '')
+        .replace(/^proceso\s+/i, '')
+        .replace(/^(?:ref(?:\.|erencia)?|asunto)\s*[:.-]?\s*/i, '')
+        .replace(/^(?:solicita(?:n)?|se\s+solicita|solicitud\s+de)\s+/i, '')
+        .replace(/\s+(?:seguido(?:a|o|as|os)?\s+por|contra|exp\.?|nurej\b|cud\b|signado\b|caratulado\b|interpuesto\b|cursante\b|con\s+c\.?i\.?\b|con\s+ci\b).*/i, '')
+        .replace(/\s*\(.*$/, '')
+        .replace(/[;,.:-]+$/, '')
+        .trim();
 
-    const normalized = text
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLowerCase();
-
-    if (/\b(remision|remita|remitir|transfiera|transferir|transferencia)\b/.test(normalized)) {
-        return 'Remision';
-    }
-
-    if (/\b(certifique|certificacion|certificar|certificado)\b/.test(normalized) || /informe\s+(?:el\s+)?monto\s+retenido/.test(normalized)) {
-        return 'Certificacion';
-    }
-
-    if (/\b(revise|revision|actualice|actualizacion|verifique|verificacion)\b/.test(normalized)) {
-        return 'Revision';
-    }
-
-    if (/informe\s+(?:si\s+)?(?:tiene|mantiene|posee)\s+cuentas/.test(normalized) || /\b(detalle|detallar)\s+de\s+movimientos\b/.test(normalized)) {
-        return 'Informe';
-    }
-
-    if (/\b(suspension|suspender|cancele|cancelacion|cancelar|liberacion|liberar|descongelamiento|descongelar)\b/.test(normalized) || /dejar\s+sin\s+efecto\s+.*retencion/.test(normalized)) {
-        return 'Suspension';
-    }
-
-    if (/\b(retencion|retener|congelamiento|congelar|inmovilizacion|inmovilizar|embargo|embargar)\b/.test(normalized)) {
-        return 'Retencion';
-    }
-
-    return '';
+    if (!cleaned) return '';
+    if (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(cleaned)) return '';
+    if (cleaned.length > 80) return '';
+    return cleaned;
 }
 
 /**
- * Extrae y clasifica el tipo de proceso desde referencias tipo REF/SOLICITA o desde el cuerpo.
- * @param {string} ocrText - Texto transcrito del adjunto
- * @returns {string} - Tipo de proceso corto o cadena vacía
+ * Limpia el valor devuelto por el modelo sin clasificarlo.
+ * @param {string} value
+ * @returns {string}
  */
-function extractTipoProcesoFallback(ocrText) {
+export function normalizeTipoProcesoValue(value = '') {
+    return cleanTipoProcesoCandidate(value);
+}
+
+/**
+ * Fallback conservador: solo extrae tipo_proceso cuando el documento trae
+ * una mencion explicita de proceso judicial.
+ * @param {string} ocrText - Texto transcrito del adjunto
+ * @returns {string}
+ */
+export function extractExplicitTipoProcesoFallback(ocrText) {
     if (!ocrText) return '';
 
-    const fullTextClassification = classifyTipoProceso(ocrText);
-    if (fullTextClassification) return fullTextClassification;
-
-    const cleanProcess = (value) => value
-        .replace(/\s+/g, ' ')
-        .replace(/^[:.;,\-\s]+/, '')
-        .replace(/^(?:SOLICITA|SOLICITAN|SOLICITUD\s+DE|SE\s+SOLICITA|PIDE|REQUIERE)\s+/i, '')
-        .trim();
-
     const lines = ocrText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    for (let i = 0; i < lines.length; i++) {
-        const refMatch = lines[i].match(/\bREF(?:\.|ERENCIA)?\s*[:.-]\s*(.+)$/i);
-        if (!refMatch) continue;
 
-        const parts = [refMatch[1]];
-        for (let j = i + 1; j < Math.min(lines.length, i + 4); j++) {
-            if (/^(?:de nuestra consideracion|mediante|señor|senor|presente|atentamente)\b/i.test(lines[j])) break;
-            if (/^(?:y\s+)?(?:fondos|cuentas|bancarias|safi|retencion|suspension)\b/i.test(lines[j]) || /^[A-ZÁÉÍÓÚÑ0-9\s.,;:-]+$/.test(lines[j])) {
-                parts.push(lines[j]);
-            } else {
-                break;
-            }
+    for (const line of lines) {
+        const explicitLabel = line.match(/\b(?:TIPO\s+DE\s+PROCESO|PROCESO)\s*[:.-]\s*(.+)$/i);
+        if (explicitLabel) {
+            const candidate = cleanTipoProcesoCandidate(explicitLabel[1]);
+            if (candidate) return candidate;
         }
-
-        const value = cleanProcess(parts.join(' '));
-        const classified = classifyTipoProceso(value);
-        if (classified) return classified;
     }
 
-    const patterns = [
-        /\b(?:SOLICITA|SOLICITAN|SE\s+SOLICITA)\s+((?:SUSPENSI[OÓ]N|SUSPENSION|RETENCI[OÓ]N|RETENCION|CONGELAMIENTO|EMBARGO)[^\n.]{10,180})/i,
-        /\bsolicitar\s+la\s+((?:SUSPENSI[OÓ]N|SUSPENSION|RETENCI[OÓ]N|RETENCION|CONGELAMIENTO|EMBARGO)[^\n.]{10,180})/i,
-        /\b((?:SUSPENSI[OÓ]N|SUSPENSION)\s+DE\s+(?:RETENCI[OÓ]N|RETENCION)[^\n.]{10,180})/i,
-        /\b((?:RETENCI[OÓ]N|RETENCION)\s+DE\s+FONDOS[^\n.]{0,180})/i,
-        /\b(CONGELAMIENTO\s+DE\s+CUENTAS[^\n.]{0,180})/i
+    const merged = lines.join(' ');
+    const inlinePatterns = [
+        /\bdentro\s+del\s+proceso\s+(.+?)(?=\s+(?:seguido(?:a|o|as|os)?\s+por|contra|exp\.?|nurej\b|cud\b|signado\b|caratulado\b|interpuesto\b|cursante\b)|[.;,:]|$)/i,
+        /\bproceso\s+de\s+(.+?)(?=\s+(?:seguido(?:a|o|as|os)?\s+por|contra|exp\.?|nurej\b|cud\b|signado\b|caratulado\b|interpuesto\b|cursante\b)|[.;,:]|$)/i
     ];
 
-    for (const pattern of patterns) {
-        const match = ocrText.match(pattern);
+    for (const pattern of inlinePatterns) {
+        const match = merged.match(pattern);
         if (match) {
-            const classified = classifyTipoProceso(cleanProcess(match[1]));
-            if (classified) return classified;
+            const candidate = cleanTipoProcesoCandidate(match[1]);
+            if (candidate) return candidate;
         }
     }
 
@@ -326,7 +293,10 @@ function normalizeAdjuntoResult(data, ocrText = '') {
     }
 
     const demandadoMontoCurrency = detectDemandadoMontoCurrency(ocrText);
-    result.tipo_proceso = classifyTipoProceso(result.tipo_proceso) || classifyTipoProceso(ocrText) || '';
+    result.tipo_proceso = normalizeTipoProcesoValue(result.tipo_proceso);
+    if (!result.tipo_proceso) {
+        result.tipo_proceso = extractExplicitTipoProcesoFallback(ocrText);
+    }
     result.moneda = normalizeDemandadoMoneda(
         result.moneda,
         result.monto_retenido ? detectDemandadoMontoCurrency(ocrText) : ''
@@ -401,12 +371,6 @@ export async function extractAdjuntoFields(ocrText) {
                     normalized.nro_cite = fallbackNroCite;
                     logger.info(`[ADJUNTO-EXTRACT] nro_cite recuperado por regex: ${fallbackNroCite}`);
                 }
-            }
-
-            const fallbackTipoProceso = extractTipoProcesoFallback(truncated);
-            if (fallbackTipoProceso && normalized.tipo_proceso !== fallbackTipoProceso) {
-                normalized.tipo_proceso = fallbackTipoProceso;
-                logger.info(`[ADJUNTO-EXTRACT] tipo_proceso clasificado: ${fallbackTipoProceso}`);
             }
 
             logger.success(`[ADJUNTO-EXTRACT] Campos del adjunto extraidos correctamente con ${model}`);

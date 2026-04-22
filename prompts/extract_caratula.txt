@@ -158,11 +158,20 @@ Si no se encuentra, devuelve "".
 ES_SIREFO
 ═══════════════════════════════════════════
 
-Devuelve true si el texto menciona SIREFO, SIREFI o el sistema de:
-  Sistema de Transmision de Ordenes de Retencion, Suspension de Retencion y Remision de Fondos
+Devuelve true SOLO si el texto muestra de forma explicita alguna de estas señales:
+  - la palabra SIREFO
+  - la palabra SIREFI
+  - el nombre completo del sistema, por ejemplo:
+    Sistema de Administracion de Ordenes de Retencion, Suspension de Retencion y Remision de Fondos
+    Sistema de Transmision de Ordenes de Retencion, Suspension de Retencion y Remision de Fondos
+  - una frase clara como "mediante el Sistema ..." seguida de ese nombre del sistema
 
-Tambien devuelve true si la referencia o el cuerpo del documento menciona instrucciones remitidas por ese sistema.
-Si no aparece ninguna de esas señales visibles, devuelve false.
+NO devuelvas true por menciones genericas o normativas como:
+  - "Retencion, Suspension de Retencion y Remision de Fondos"
+  - "Reglamento para la Retencion, Suspension de Retencion y Remision de Fondos"
+  - "Remision de Fondos, contenido en el Capitulo ..."
+
+Si no aparece una señal explicita del sistema SIREFO/SIREFI, devuelve false.
 
 
 ═══════════════════════════════════════════

@@ -4,13 +4,13 @@ Busca en TODA la imagen una secuencia de 5 a 7 digitos asociada a la letra R, a 
 
 El codigo puede estar manuscrito, sellado o impreso. Puede aparecer como R-266293, R 266293, R.266293, R/266293, R-26 912 o solo 266293 si la R no aparece.
 
-ZONAS CRITICAS:
-- sello circular ASFI/RECEPCION en la parte inferior derecha
-- recuadro "AUTORIDAD DE SUPERVISION DEL SISTEMA FINANCIERO No. TRAMITE"
-- anotaciones manuscritas junto o dentro de sellos
-- pie de pagina y margenes inferiores
+BUSQUEDA EXHAUSTIVA:
+- Revisa toda la pagina completa sin prioridades de ubicacion.
+- Revisa por bloques toda la imagen: superior izquierda, superior centro, superior derecha, centro izquierda, centro, centro derecha, inferior izquierda, inferior centro e inferior derecha.
+- Incluye sellos ASFI/RECEPCION, recuadros "No. TRAMITE", encabezado, pie, margenes y anotaciones manuscritas o selladas.
 
 Ignora numeros que correspondan claramente a fechas, CI, NIT, NUREJ, CUD, telefonos, montos, folios, paginas, tramites T- o numeros pequenos del anillo del sello.
+Dentro de un mismo sello puede haber una fecha y tambien un codigo R en lineas distintas; separalos visualmente antes de decidir.
 
 Antes de responder, revisa cada digito del candidato. No completes digitos borrosos; si dudas, devuelve NO_ENCONTRADO.
 Si el codigo aparece con espacios entre digitos, unelos en la respuesta. Ejemplo: R-26 912 -> R-26912.
