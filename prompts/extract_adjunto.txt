@@ -249,6 +249,16 @@ JUEZ
 ═══════════════════════════════════════════
 
 El nombre del juez del caso TAL CUAL APARECE. Sin deducciones.
+Busca de forma exhaustiva en todo el documento, incluyendo:
+  - lineas con "JUEZ" o "JUEZA"
+  - el bloque de firma al pie de pagina
+  - texto inclinado o cercano a la rubrica
+  - la linea inmediatamente superior al cargo del juez
+
+REGLAS:
+- Si el nombre del juez esta en la firma y el cargo esta en otra linea, devuelve solo la linea del nombre visible.
+- No confundas juez con secretaria, oficial de diligencias, vocal, auxiliar ni otros cargos.
+- Si solo ves el cargo del juez pero no el nombre, devuelve "".
 Si no se encuentra, devuelve "".
 
 ═══════════════════════════════════════════

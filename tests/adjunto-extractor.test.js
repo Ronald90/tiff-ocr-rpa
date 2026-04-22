@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    extractJuezFallback,
     normalizeTipoProcesoValue,
-    extractExplicitTipoProcesoFallback
+    extractExplicitTipoProcesoFallback,
+    normalizeJuezValue
 } from '../adjunto-extractor.js';
 
 describe('tipo_proceso handling', () => {
@@ -60,5 +62,35 @@ describe('tipo_proceso handling', () => {
         ].join('\n');
 
         assert.equal(extractExplicitTipoProcesoFallback(text), '');
+    });
+});
+
+describe('juez handling', () => {
+    it('limpia una salida del modelo que mezcla nombre y cargo del juez', () => {
+        const value = 'Dra. Margarita Anez Tejerina JUEZ PUBLICO CIVIL-COMERCIAL DE LA CAPITAL 21°';
+        assert.equal(normalizeJuezValue(value), 'Dra. Margarita Anez Tejerina');
+    });
+
+    it('extrae el nombre del juez desde el bloque de firma', () => {
+        const text = [
+            'Con este motivo saludo a ustedes muy atentamente.-',
+            '[FIRMA]',
+            'Margarita Anez Tejerina',
+            'JUEZ PUBLICO CIVIL-COMERCIAL DE LA CAPITAL 21°',
+            'SANTA CRUZ - BOLIVIA'
+        ].join('\n');
+
+        assert.equal(extractJuezFallback(text), 'Margarita Anez Tejerina');
+    });
+
+    it('no confunde la firma de secretaria con el nombre del juez', () => {
+        const text = [
+            '[FIRMA]',
+            'Maria Lopez Perez',
+            'SECRETARIA - ABOGADA',
+            'JUZGADO PUBLICO CIVIL-COMERCIAL 21°'
+        ].join('\n');
+
+        assert.equal(extractJuezFallback(text), '');
     });
 });

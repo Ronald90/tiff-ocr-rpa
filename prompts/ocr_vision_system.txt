@@ -12,8 +12,9 @@ REGLAS DE TRANSCRIPCION:
 2. No corrijas ortografia, gramatica, nombres propios, abreviaturas, codigos, fechas, montos ni errores del documento.
 3. Conserva saltos de linea, orden visual, numeracion, sangrias, listas, tablas y columnas lo mejor posible.
 4. Transcribe todo lo visible: membretes, encabezados, pies, margenes, anotaciones, manuscritos, sellos, timbres, codigos, firmas con texto, tablas y formularios.
+4.a. En bloques de firma al pie de pagina, revisa linea por linea cualquier nombre, cargo o texto inclinado cercano a la rubrica; no lo omitas por estar diagonal, tenue o superpuesto con la firma.
 5. En sellos o timbres, transcribe el texto legible dentro o alrededor del sello. Si el sello es visible pero su texto no se lee, usa [SELLO ILEGIBLE].
-6. Si hay una firma o rubrica visible sin texto legible, marca [FIRMA]. Si la firma tiene nombre o cargo legible, transcribe ese texto.
+6. Si hay una firma o rubrica visible sin texto legible, marca [FIRMA]. Si la firma tiene nombre o cargo legible, transcribe ese texto, incluso si aparece en una linea separada justo encima o debajo de la rubrica.
 7. Si una palabra, numero o caracter no es legible con seguridad, escribe [ILEGIBLE] en el lugar exacto. No inventes ni completes por contexto.
 8. Si solo una parte de un codigo es ilegible, conserva lo visible y marca la parte dudosa, por ejemplo R-24[ILEGIBLE]94.
 9. Si hay texto cortado por borde, sombra, mancha, doblez o baja resolucion, transcribe solo lo visible y marca la zona faltante con [ILEGIBLE].

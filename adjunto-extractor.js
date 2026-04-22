@@ -155,6 +155,140 @@ export function normalizeTipoProcesoValue(value = '') {
     return cleanTipoProcesoCandidate(value);
 }
 
+function normalizeLooseLine(value = '') {
+    return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function isSkippableSignatureLine(line = '') {
+    const normalized = normalizeLooseLine(line);
+    if (!normalized) return true;
+    if (/^(?:\[ILEGIBLE\]\s*)+$/i.test(normalized)) return true;
+    if (/^\[(?:FIRMA|SELLO ILEGIBLE)\]$/i.test(normalized)) return true;
+    return /^[._\-\\/]+$/.test(normalized);
+}
+
+function isHonorificOnly(line = '') {
+    return /^(?:Dr|Dra|Abog|Abg|Lic|Msc)\.?$/i.test(normalizeLooseLine(line));
+}
+
+function cleanJuezCandidate(value = '') {
+    const cleaned = normalizeLooseLine(value)
+        .replace(/^\[FIRMA\]\s*/i, '')
+        .replace(/^(?:nombre\s+del\s+)?juez(?:a)?\s*[:.-]?\s*/i, '')
+        .replace(/\s+\bJUEZ(?:A)?\b.*$/i, '')
+        .replace(/[;,:.-]+$/, '')
+        .trim();
+
+    if (!cleaned) return '';
+    if (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(cleaned)) return '';
+    if (cleaned.length < 4 || cleaned.length > 100) return '';
+
+    const visibleWords = cleaned
+        .replace(/\[ILEGIBLE\]/gi, ' ')
+        .replace(/\b(?:Dr|Dra|Abog|Abg|Lic|Msc)\.?\b/gi, ' ')
+        .replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ'\- ]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!visibleWords) return '';
+    if (/\d/.test(visibleWords)) return '';
+
+    const forbiddenKeywords = /\b(?:SECRETARI(?:A|O)|VOCAL|OFICIAL|AUXILIAR|TRIBUNAL|JUZGADO|BOLIVIA|PRESENTE|OFICIO|REFERENCIA|REF|EXP|NUREJ|CUD|ASFI|AUTORIDAD|DIRECTOR|PUBLIC[AO]|CIVIL|COMERCIAL|FAMILIA|PENAL|SOCIAL|TRABAJO|PARTIDO|INSTRUCCION)\b/i;
+    if (forbiddenKeywords.test(visibleWords)) return '';
+
+    const tokens = visibleWords.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2 || tokens.length > 7) return '';
+
+    return cleaned;
+}
+
+function extractJuezCandidateFromLine(line = '') {
+    const normalized = normalizeLooseLine(line);
+    if (!normalized) return '';
+
+    const labeledMatch = normalized.match(/^juez(?:a)?\s*[:.-]\s*(.+)$/i);
+    if (labeledMatch) {
+        return cleanJuezCandidate(labeledMatch[1]);
+    }
+
+    const inlineMatch = normalized.match(/^(.*?)\s+\bJUEZ(?:A)?\b/i);
+    if (inlineMatch && inlineMatch[1].trim()) {
+        return cleanJuezCandidate(inlineMatch[1]);
+    }
+
+    return '';
+}
+
+/**
+ * Limpia el valor devuelto por el modelo para juez sin inventar ni clasificar.
+ * @param {string} value
+ * @returns {string}
+ */
+export function normalizeJuezValue(value = '') {
+    const lines = String(value).split(/\r?\n/).map(normalizeLooseLine).filter(Boolean);
+
+    for (const line of lines) {
+        const candidate = extractJuezCandidateFromLine(line);
+        if (candidate) return candidate;
+    }
+
+    for (const line of lines) {
+        const candidate = cleanJuezCandidate(line);
+        if (candidate) return candidate;
+    }
+
+    return '';
+}
+
+/**
+ * Fallback conservador para recuperar el nombre del juez desde el bloque de firma
+ * o una etiqueta explicita visible en el OCR.
+ * @param {string} ocrText - Texto transcrito del adjunto
+ * @returns {string}
+ */
+export function extractJuezFallback(ocrText) {
+    if (!ocrText) return '';
+
+    const lines = String(ocrText).split(/\r?\n/).map(normalizeLooseLine).filter(Boolean);
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        const inlineCandidate = extractJuezCandidateFromLine(line);
+        if (inlineCandidate) return inlineCandidate;
+
+        if (!/\bJUEZ(?:A)?\b/i.test(line)) {
+            continue;
+        }
+
+        let honorific = '';
+
+        for (let j = i - 1; j >= Math.max(0, i - 4); j--) {
+            const previousLine = lines[j];
+
+            if (isSkippableSignatureLine(previousLine)) {
+                continue;
+            }
+
+            if (isHonorificOnly(previousLine)) {
+                honorific = previousLine;
+                continue;
+            }
+
+            const candidate = cleanJuezCandidate(
+                honorific ? `${honorific} ${previousLine}` : previousLine
+            );
+
+            if (candidate) {
+                return candidate;
+            }
+
+            break;
+        }
+    }
+
+    return '';
+}
+
 /**
  * Fallback conservador: solo extrae tipo_proceso cuando el documento trae
  * una mencion explicita de proceso judicial.
@@ -296,6 +430,10 @@ function normalizeAdjuntoResult(data, ocrText = '') {
     result.tipo_proceso = normalizeTipoProcesoValue(result.tipo_proceso);
     if (!result.tipo_proceso) {
         result.tipo_proceso = extractExplicitTipoProcesoFallback(ocrText);
+    }
+    result.juez = normalizeJuezValue(result.juez);
+    if (!result.juez) {
+        result.juez = extractJuezFallback(ocrText);
     }
     result.moneda = normalizeDemandadoMoneda(
         result.moneda,

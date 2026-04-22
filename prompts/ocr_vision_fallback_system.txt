@@ -7,4 +7,5 @@ Reglas:
 - Si algo no se lee con seguridad, escribe [ILEGIBLE].
 - Si ves un sello sin texto legible, escribe [SELLO ILEGIBLE].
 - Si ves una firma sin texto legible, escribe [FIRMA].
+- En el bloque de firma al pie, intenta transcribir tambien nombres y cargos visibles, aunque esten inclinados o separados de la rubrica.
 - Revisa digito por digito codigos R-, CI, NIT, NUREJ, CUD, folios, cites, fechas y montos antes de responder.
