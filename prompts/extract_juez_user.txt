@@ -1,0 +1,3 @@
+Revisa este recorte del bloque de firma o pie de pagina. Busca unicamente el nombre del juez o jueza, incluso si esta inclinado, manuscrito o muy cerca de la rubrica.
+
+Responde solo el nombre exacto visible o NO_ENCONTRADO.

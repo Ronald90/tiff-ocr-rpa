@@ -5,7 +5,7 @@ import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
 import { extractFields } from './extractor.js';
-import { extractAdjuntoFields } from './adjunto-extractor.js';
+import { extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
 import {
     matchSingleNumber,
     extractDocCode,
@@ -44,6 +44,12 @@ const CROP_REGIONS = {
     centerBand: { left: 0.15, top: 0.15, width: 0.70, height: 0.70 }
 };
 
+/** Recortes focalizados para recuperar el nombre del juez en el bloque de firma */
+const JUDGE_SIGNATURE_REGIONS = [
+    { label: 'franja inferior', region: { left: 0, top: 0.68, width: 1, height: 0.32 } },
+    { label: 'bloque inferior derecho', region: { left: 0.42, top: 0.56, width: 0.58, height: 0.44 } }
+];
+
 /** Timeout para identificación rápida de documento (ms) */
 const ID_TIMEOUT_MS = 30000;
 
@@ -73,6 +79,8 @@ const PROMPTS = {
     ocrVisionUser: fs.readFileSync(path.resolve('./prompts/ocr_vision_user.txt'), 'utf-8'),
     ocrVisionFallbackSystem: fs.readFileSync(path.resolve('./prompts/ocr_vision_fallback_system.txt'), 'utf-8'),
     ocrVisionFallbackUser: fs.readFileSync(path.resolve('./prompts/ocr_vision_fallback_user.txt'), 'utf-8'),
+    extractJuezSystem: fs.readFileSync(path.resolve('./prompts/extract_juez_system.txt'), 'utf-8'),
+    extractJuezUser: fs.readFileSync(path.resolve('./prompts/extract_juez_user.txt'), 'utf-8'),
     idDocSystem: fs.readFileSync(path.resolve('./prompts/id_doc_system.txt'), 'utf-8'),
     idDocUser: fs.readFileSync(path.resolve('./prompts/id_doc_user.txt'), 'utf-8'),
     idDocExpectedSystem: fs.readFileSync(path.resolve('./prompts/id_doc_expected_system.txt'), 'utf-8'),
@@ -311,6 +319,66 @@ async function transcribeWithVision(pngBuffer, pageNum) {
             clearTimeout(timeout);
         }
     }
+}
+
+async function extractJudgeFromCrop(pngBuffer, pageNum, label) {
+    const model = config.model;
+    const imgBase64 = pngBuffer.toString('base64');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.timeoutPerPageMs);
+
+    try {
+        const response = await openai.chat.completions.create({
+            model,
+            messages: [
+                {
+                    role: 'system',
+                    content: PROMPTS.extractJuezSystem
+                },
+                {
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'text',
+                            text: renderPrompt(PROMPTS.extractJuezUser, { pageNum, label })
+                        },
+                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                    ]
+                }
+            ],
+            max_completion_tokens: 300
+        }, { signal: controller.signal });
+
+        const raw = response.choices[0].message.content.trim();
+        const normalized = normalizeJuezValue(raw);
+        if (normalized) {
+            logger.info(`  [JUEZ] Pagina ${pageNum} - Nombre recuperado desde ${label}: ${normalized}`);
+            return normalized;
+        }
+
+        return '';
+    } catch (err) {
+        logger.warn(`  [JUEZ] Error recuperando juez en pagina ${pageNum} (${label}): ${err.message}`);
+        return '';
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function recoverMissingJudge(pngBuffer, pageNum) {
+    for (const { label, region } of JUDGE_SIGNATURE_REGIONS) {
+        logger.info(`  [JUEZ] Pagina ${pageNum} - Intento focalizado en ${label}...`);
+        const cropped = await cropRegion(pngBuffer, region);
+        const directJudge = await extractJudgeFromCrop(cropped, pageNum, label);
+        if (directJudge) return directJudge;
+
+        logger.info(`  [JUEZ] Pagina ${pageNum} - Intento ${label} + enhanced...`);
+        const enhanced = await enhanceForHandwriting(cropped);
+        const enhancedJudge = await extractJudgeFromCrop(enhanced, pageNum, `${label} + enhanced`);
+        if (enhancedJudge) return enhancedJudge;
+    }
+
+    return '';
 }
 
 // ── Normalizacion de codigo identificado ──────────────────────────────
@@ -965,6 +1033,13 @@ export async function processFile(tiffPath, outputDir) {
                         } else {
                             logger.warn('  [FALLBACK] Aun sin campos criticos despues del fallback multi-pagina Vision');
                         }
+                    }
+                }
+
+                if (!adjuntoData.juez) {
+                    const recoveredJudge = await recoverMissingJudge(pngBuffer, pageNum);
+                    if (recoveredJudge) {
+                        adjuntoData.juez = recoveredJudge;
                     }
                 }
 
