@@ -30,6 +30,7 @@ function normalize(str) {
 }
 
 const MAX_CODE_DIGIT_DISTANCE = 1;
+const MIN_CONFIDENCE_THRESHOLD = 0.80;
 const SPANISH_MONTHS = {
     ENE: '01',
     ENERO: '01',
@@ -200,6 +201,32 @@ export function extractRCodes(text) {
 }
 
 /**
+ * Detecta si la lista de documentos contiene códigos muy similares entre sí
+ * (distancia Levenshtein ≤ 2). Cuando esto ocurre, el matching debe ser más estricto
+ * para evitar asignar datos judiciales a la persona equivocada.
+ * @param {string[]} documentList - Lista de documentos adjuntos
+ * @returns {boolean}
+ */
+function detectSimilarCodesInList(documentList) {
+    if (!documentList || documentList.length < 2) return false;
+
+    const codes = documentList
+        .map(doc => extractDocCode(doc))
+        .filter(Boolean)
+        .map(code => normalize(code));
+
+    for (let i = 0; i < codes.length; i++) {
+        for (let j = i + 1; j < codes.length; j++) {
+            if (levenshteinDistance(codes[i], codes[j]) <= 2) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
  * Dado un número identificado por el prompt barato (ej. "R-241594" o "R-24I594"),
  * busca cuál documento de la lista de adjuntos es el match más cercano.
  * @param {string} identifiedNumber — Número identificado en la página (puede tener errores de transcripción)
@@ -211,9 +238,11 @@ export function matchSingleNumber(identifiedNumber, documentList, options = {}) 
         return { matched: false, documento: null, code: null, score: 0 };
     }
 
+    // Detectar si hay códigos similares en la lista para endurecer el matching
+    const hasSimilarCodes = detectSimilarCodesInList(documentList);
     const maxDigitDistance = Number.isInteger(options.maxDigitDistance)
         ? options.maxDigitDistance
-        : MAX_CODE_DIGIT_DISTANCE;
+        : (hasSimilarCodes ? 0 : MAX_CODE_DIGIT_DISTANCE);
     const maxLengthDelta = Number.isInteger(options.maxLengthDelta)
         ? options.maxLengthDelta
         : 0;
@@ -281,13 +310,14 @@ export function matchSingleNumber(identifiedNumber, documentList, options = {}) 
         }
     }
 
-    const matched = bestSameDigitLength && !ambiguousBest;
+    const matched = bestSameDigitLength && !ambiguousBest && bestScore >= MIN_CONFIDENCE_THRESHOLD;
 
     return {
         matched,
         documento: matched ? bestDoc : null,
         code: matched ? bestCode : null,
-        score: parseFloat(bestScore.toFixed(4))
+        score: parseFloat(bestScore.toFixed(4)),
+        similarCodesDetected: hasSimilarCodes
     };
 }
 

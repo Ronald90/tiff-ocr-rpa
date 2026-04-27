@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import sharp from 'sharp';
 import config from './config.js';
 import logger from './logger.js';
@@ -65,9 +66,8 @@ const HANDWRITING_CONTRAST = 1.5;
 /** Longitud máxima de texto para considerar como rechazo del modelo */
 const REFUSAL_MAX_LENGTH = 200;
 
-/** Máximo de llamadas API por página antes de abandonar la identificación.
- *  Se elevó para permitir una búsqueda más exhaustiva en documentos legales. */
-const MAX_API_CALLS_PER_PAGE = 18;
+/** Máximo de llamadas API por página antes de abandonar la identificación. */
+const MAX_API_CALLS_PER_PAGE = 8;
 
 /** Máximo de páginas previas a buscar en fallback de campos críticos */
 const MAX_PREV_PAGES_FALLBACK = 2;
@@ -615,47 +615,10 @@ async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentLi
     const views = [
         { label: 'pagina completa', create: async () => pngBuffer },
         { label: 'franja superior', create: async () => cropTopSection(pngBuffer, TOP_STRIP_FRACTION) },
-        { label: 'mitad izquierda', create: async () => cropRegion(pngBuffer, CROP_REGIONS.leftHalf) },
-        { label: 'mitad derecha', create: async () => cropRegion(pngBuffer, CROP_REGIONS.rightHalf) },
         { label: 'mitad superior', create: async () => cropRegion(pngBuffer, CROP_REGIONS.upperHalf) },
         { label: 'mitad inferior', create: async () => cropRegion(pngBuffer, CROP_REGIONS.lowerHalf) },
-        { label: 'banda central', create: async () => cropRegion(pngBuffer, CROP_REGIONS.centerBand) },
-        {
-            label: 'zona superior izquierda',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topLeft)
-        },
-        {
-            label: 'zona superior central',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topCenter)
-        },
-        {
-            label: 'zona superior derecha',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.topRight)
-        },
-        {
-            label: 'zona central izquierda',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.middleLeft)
-        },
-        {
-            label: 'zona central',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.middleCenter)
-        },
-        {
-            label: 'zona central derecha',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.middleRight)
-        },
-        {
-            label: 'zona inferior izquierda',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.bottomLeft)
-        },
-        {
-            label: 'zona inferior central',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.bottomCenter)
-        },
-        {
-            label: 'zona inferior derecha',
-            create: async () => cropRegion(pngBuffer, CROP_REGIONS.bottomRight)
-        }
+        { label: 'zona superior derecha', create: async () => cropRegion(pngBuffer, CROP_REGIONS.topRight) },
+        { label: 'zona superior izquierda', create: async () => cropRegion(pngBuffer, CROP_REGIONS.topLeft) }
     ];
 
     for (const view of views) {
@@ -755,39 +718,15 @@ async function identifyPageCode(pngBuffer, pageNum, pendingAdjuntos) {
             if (result) return result;
         }
 
-        // Paso 4B: Mitad izquierda + enhanced
-        if (apiCalls < budget) {
-            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con mitad izquierda + enhanced...`);
-            const croppedLeftHalf = await cropRegion(pngBuffer, CROP_REGIONS.leftHalf);
-            const enhancedLeftHalf = await enhanceForHandwriting(croppedLeftHalf);
-            result = await withBudget(
-                () => identifyDocNumber(enhancedLeftHalf, pageNum),
-                'identifyDocNumber(leftHalf+enhanced)'
-            );
-            if (result) return result;
-        }
-
-        // Paso 4C: Mitad derecha + enhanced
-        if (apiCalls < budget) {
-            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con mitad derecha + enhanced...`);
-            const croppedRightHalf = await cropRegion(pngBuffer, CROP_REGIONS.rightHalf);
-            const enhancedRightHalf = await enhanceForHandwriting(croppedRightHalf);
-            result = await withBudget(
-                () => identifyDocNumber(enhancedRightHalf, pageNum),
-                'identifyDocNumber(rightHalf+enhanced)'
-            );
-            if (result) return result;
-        }
-
     } catch (enhanceErr) {
         logger.warn(`  [ENHANCE] Error en preprocesamiento pagina ${pageNum}: ${enhanceErr.message}`);
     }
 
-    // Paso 5: Barrido exhaustivo dirigido con códigos pendientes
+    // Paso 5: Barrido dirigido con códigos pendientes (6 vistas)
     if (apiCalls < budget) {
-        logger.info(`  [RETRY] Pagina ${pageNum} - Barrido exhaustivo con codigos pendientes...`);
+        logger.info(`  [RETRY] Pagina ${pageNum} - Barrido dirigido con codigos pendientes...`);
         result = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos);
-        apiCalls += 17; // barrido exhaustivo consume multiples vistas de la pagina
+        apiCalls += 7; // barrido dirigido consume 6 vistas + 1 enhanced
         if (result) return result;
     }
 
@@ -891,7 +830,7 @@ export async function processFile(tiffPath, outputDir) {
     }
 
     // ===================================================================
-    // FASE 2 y 3: Identificacion + Vision selectiva (paginas despues de caratula)
+    // FASE 2: Identificación PARALELA de números (páginas después de carátula)
     // ===================================================================
 
     const ubicacion_adjuntos = [];
@@ -902,111 +841,219 @@ export async function processFile(tiffPath, outputDir) {
     let errorCount = 0;
     let skippedCount = 0;
 
+    // Almacena resultados de identificación por pageIndex para Fase 3
+    const idResults = {};
+
+    // Pre-inicializar allText para todas las páginas (permite asignación por índice en continuaciones)
+    for (let pi = coverPageCount; pi < numPages; pi++) {
+        allText.push('');
+    }
+
     if (adjuntos.length > 0 && numPages > coverPageCount) {
-        logger.info(`[FASE 2] Identificando numeros en paginas ${coverPageCount + 1}-${numPages}...`);
+        const pageConcurrency = config.concurrency;
+        logger.info(`[FASE 2] Identificando numeros en paginas ${coverPageCount + 1}-${numPages} (${pageConcurrency} en paralelo)...`);
+
+        // Procesar páginas en lotes paralelos para identificación
+        for (let batchStart = coverPageCount; batchStart < numPages; batchStart += pageConcurrency) {
+            if (pendingAdjuntos.length === 0) {
+                logger.info(`  [SKIP] Todos los codigos encontrados (${matchedCodes.size}). Omitiendo paginas ${batchStart + 1}-${numPages}.`);
+                for (let pi = batchStart; pi < numPages; pi++) {
+                    idResults[pi] = { pageIndex: pi, pageNum: pi + 1, code: null, pngBuffer: null, sizeKB: '0', skipped: true };
+                }
+                break;
+            }
+
+            const batchEnd = Math.min(batchStart + pageConcurrency, numPages);
+            const pendingSnapshot = [...pendingAdjuntos];
+
+            // Lanzar identificación de todas las páginas del lote en paralelo
+            const batchPromises = [];
+            for (let pi = batchStart; pi < batchEnd; pi++) {
+                const pageNum = pi + 1;
+                batchPromises.push((async () => {
+                    try {
+                        const pngBuffer = await extractPageAsPng(tiffPath, pi, HIGH_RES_WIDTH);
+                        const sizeKB = (pngBuffer.length / 1024).toFixed(1);
+                        let code = await identifyPageCode(pngBuffer, pageNum, pendingSnapshot);
+
+                        // Si el código no coincide, intento dirigido
+                        if (code) {
+                            const quickMatch = matchSingleNumber(code, pendingSnapshot);
+                            if (!quickMatch.matched) {
+                                logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Codigo "${code}" no coincide. Intento dirigido...`);
+                                const targetedNumber = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingSnapshot);
+                                if (targetedNumber) {
+                                    const targetedMatch = matchSingleNumber(targetedNumber, pendingSnapshot);
+                                    if (targetedMatch.matched) {
+                                        logger.info(`  [ID TARGET] Pagina ${pageNum}/${numPages} - Codigo corregido: ${targetedNumber}`);
+                                        code = targetedNumber;
+                                    }
+                                }
+                            }
+                        }
+
+                        return { pageIndex: pi, pageNum, code, pngBuffer, sizeKB, error: null };
+                    } catch (err) {
+                        return { pageIndex: pi, pageNum: pi + 1, code: null, pngBuffer: null, sizeKB: '0', error: err };
+                    }
+                })());
+            }
+
+            const batchResults = await Promise.all(batchPromises);
+
+            // Procesar resultados del lote SECUENCIALMENTE (orden de página) para matching consistente
+            for (const result of batchResults.sort((a, b) => a.pageIndex - b.pageIndex)) {
+                idResults[result.pageIndex] = result;
+
+                if (result.error) {
+                    logger.error(`  [ERROR] Pagina ${result.pageNum}/${numPages}: ${result.error.message}`);
+                    errorCount++;
+                    continue;
+                }
+
+                if (!result.code) {
+                    logger.info(`  [ID] Pagina ${result.pageNum}/${numPages} (${result.sizeKB} KB) - Sin codigo`);
+                    continue;
+                }
+
+                // Fuzzy match contra adjuntos PENDIENTES actuales
+                const matchResult = matchSingleNumber(result.code, pendingAdjuntos);
+
+                if (!matchResult.matched) {
+                    const isAlreadyFound = matchedCodes.has(result.code.match(/R-\d{5,7}/)?.[0] || '');
+                    if (isAlreadyFound) {
+                        logger.warn(`  [SKIP] Pagina ${result.pageNum}/${numPages} - Codigo "${result.code}" ya encontrado`);
+                    } else {
+                        logger.warn(`  [SKIP] Pagina ${result.pageNum}/${numPages} - Codigo "${result.code}" no coincide (score: ${matchResult.score})`);
+                    }
+                    continue;
+                }
+
+                logger.info(`  [ID] Pagina ${result.pageNum}/${numPages} - Codigo: ${result.code}`);
+                logger.info(`  [MATCH] Pagina ${result.pageNum} <-> ${matchResult.code} (confianza: ${(matchResult.score * 100).toFixed(0)}%)`);
+                matchedCodes.add(matchResult.code);
+                pendingAdjuntos = pendingAdjuntos.filter(doc => extractDocCode(doc) !== matchResult.code);
+                logger.info(`  [INFO] Codigo "${matchResult.code}" removido. Faltan ${pendingAdjuntos.length} codigos.`);
+
+                idResults[result.pageIndex].matchResult = matchResult;
+            }
+        }
+
+        // =================================================================
+        // FASE 3: Vision selectiva + Extracción + Detección de continuación
+        // =================================================================
+
+        logger.info(`[FASE 3] Transcribiendo paginas con match y detectando continuaciones...`);
 
         for (let pageIndex = coverPageCount; pageIndex < numPages; pageIndex++) {
-            const pageNum = pageIndex + 1;
+            const idResult = idResults[pageIndex];
 
-            if (pendingAdjuntos.length === 0) {
-                logger.info(`  [SKIP] Pagina ${pageNum}/${numPages} - Ya se encontraron todos los codigos (${matchedCodes.size}). Se omite la pagina.`);
-                allText.push('');
+            if (!idResult || idResult.skipped || idResult.error) {
+                if (idResult?.error) allText[pageIndex] = `[ERROR] Pagina ${idResult.pageNum}: ${idResult.error.message}`;
+                if (!idResult?.error && !idResult?.skipped) skippedCount++;
+                if (idResult?.skipped) skippedCount++;
+                continue;
+            }
+
+            // ── Página SIN match: omitir (será capturada como continuación si aplica)
+            if (!idResult.matchResult) {
                 skippedCount++;
                 continue;
             }
 
+            // ── Página CON match: transcribir + extraer + buscar continuaciones
             try {
-                const pngBuffer = await extractPageAsPng(tiffPath, pageIndex, HIGH_RES_WIDTH);
-                const sizeKB = (pngBuffer.length / 1024).toFixed(1);
+                const { pageNum, pngBuffer, sizeKB, code } = idResult;
+                let matchResult = idResult.matchResult;
+                let identifiedNumber = code;
 
-                // Identificación escalonada con presupuesto
-                let identifiedNumber = await identifyPageCode(pngBuffer, pageNum, pendingAdjuntos);
-
-                // Fuzzy match contra la lista de adjuntos PENDIENTES
-                let matchResult = matchSingleNumber(identifiedNumber, pendingAdjuntos);
-
-                // Si el código fue encontrado pero no coincide, intento dirigido
-                if (identifiedNumber && !matchResult.matched) {
-                    logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Codigo "${identifiedNumber}" no coincide. Reintentando contra lista pendiente...`);
-                    const targetedNumber = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos);
-                    if (targetedNumber) {
-                        const targetedMatch = matchSingleNumber(targetedNumber, pendingAdjuntos);
-                        if (targetedMatch.matched) {
-                            identifiedNumber = targetedNumber;
-                            matchResult = targetedMatch;
-                            logger.info(`  [ID TARGET] Pagina ${pageNum}/${numPages} - Codigo corregido: ${identifiedNumber}`);
-                        }
-                    }
-                }
-
-                if (!identifiedNumber) {
-                    logger.warn(`  [SKIP] Pagina ${pageNum}/${numPages} (${sizeKB} KB) - No se identifico codigo despues de todos los intentos`);
-                    allText.push('');
-                    skippedCount++;
-                    continue;
-                }
-
-                logger.info(`  [ID] Pagina ${pageNum}/${numPages} - Codigo identificado: ${identifiedNumber}`);
-
-                if (!matchResult.matched) {
-                    const isAlreadyFound = matchedCodes.has(identifiedNumber.match(/R-\d{5,7}/)?.[0] || '');
-                    if (isAlreadyFound) {
-                        logger.warn(`  [SKIP] Pagina ${pageNum}/${numPages} (${sizeKB} KB) - El codigo "${identifiedNumber}" ya fue encontrado antes en otra pagina.`);
-                    } else {
-                        logger.warn(`  [SKIP] Pagina ${pageNum}/${numPages} (${sizeKB} KB) - Codigo "${identifiedNumber}" no coincide con ningun adjunto pendiente (score: ${matchResult.score})`);
-                    }
-                    allText.push('');
-                    skippedCount++;
-                    continue;
-                }
-
-                // Paso 3: Vision de esta pagina
                 logger.info(`  [VISION] Transcribiendo pagina ${pageNum}/${numPages} (${sizeKB} KB)...`);
                 const visionText = (await transcribeWithVision(pngBuffer, pageNum)) || '';
-                allText.push(visionText);
+                allText[pageIndex] = visionText;
                 successCount++;
 
-                const reconciledMatch = reconcileMatchWithVisionText(matchResult, visionText, pendingAdjuntos);
+                const reconciledMatch = reconcileMatchWithVisionText(matchResult, visionText, [...adjuntos]);
                 if (reconciledMatch.matched && reconciledMatch.code !== matchResult.code) {
                     logger.info(`  [RECONCILE] Pagina ${pageNum}/${numPages} - Codigo corregido por OCR: ${matchResult.code} -> ${reconciledMatch.code}`);
                     matchResult = reconciledMatch;
                     identifiedNumber = reconciledMatch.code;
                 }
 
-                logger.info(`  [MATCH] Pagina ${pageNum} <-> ${matchResult.code} (confianza: ${(matchResult.score * 100).toFixed(0)}%)`);
-                matchedCodes.add(matchResult.code);
+                // ── Detección de páginas de continuación ──────────────
+                // Buscar páginas siguientes SIN código propio como continuación de tabla
+                const continuationTexts = [];
+                let peekIndex = pageIndex + 1;
+                const MAX_CONTINUATION_PAGES = 10;
 
-                pendingAdjuntos = pendingAdjuntos.filter(doc => extractDocCode(doc) !== matchResult.code);
-                logger.info(`  [INFO] Codigo "${matchResult.code}" removido de la lista de busqueda. Faltan ${pendingAdjuntos.length} codigos.`);
+                while (peekIndex < numPages && continuationTexts.length < MAX_CONTINUATION_PAGES) {
+                    const nextIdResult = idResults[peekIndex];
+                    // Si la siguiente página tiene match propio, parar
+                    if (nextIdResult?.matchResult) break;
+                    // Si la siguiente página tiene código (aunque no matchee), parar
+                    if (nextIdResult?.code) break;
+                    // Si es skipped o error, parar
+                    if (!nextIdResult || nextIdResult.skipped || nextIdResult.error) break;
 
-                // Paso 3B: Intentar extracción con solo la página actual primero
-                let extractionText = visionText;
-                logger.info(`  [EXTRACT] Extrayendo datos del adjunto (${extractionText.length} chars, 1 pagina)...`);
+                    // Candidata a continuación → transcribir
+                    try {
+                        const contPng = nextIdResult.pngBuffer || await extractPageAsPng(tiffPath, peekIndex, HIGH_RES_WIDTH);
+                        const contSizeKB = (contPng.length / 1024).toFixed(1);
+                        logger.info(`  [CONT] Pagina ${peekIndex + 1}/${numPages} (${contSizeKB} KB) - Posible continuacion de tabla...`);
+                        const contText = (await transcribeWithVision(contPng, peekIndex + 1)) || '';
+
+                        if (contText.trim().length > 0) {
+                            continuationTexts.push(contText);
+                            allText[peekIndex] = contText; // Actualizar en allText (puede estar como '')
+                            successCount++;
+                            // Decrementar skippedCount ya que esta página ahora se procesa
+                            if (skippedCount > 0) skippedCount--;
+                            logger.success(`  [CONT] Pagina ${peekIndex + 1} agregada como continuacion (${contText.length} chars)`);
+                        } else {
+                            break; // Página vacía → fin de continuación
+                        }
+                    } catch (contErr) {
+                        logger.warn(`  [CONT] Error en pagina ${peekIndex + 1}: ${contErr.message}`);
+                        break;
+                    }
+
+                    peekIndex++;
+                }
+
+                if (continuationTexts.length > 0) {
+                    logger.info(`  [CONT] ${continuationTexts.length} pagina(s) de continuacion detectadas para ${matchResult.code}`);
+                }
+
+                // Extraer datos con todas las páginas (principal + continuaciones)
+                let extractionText = [visionText, ...continuationTexts].join('\n\n');
+                const totalPages = 1 + continuationTexts.length;
+                logger.info(`  [EXTRACT] Extrayendo datos del adjunto (${extractionText.length} chars, ${totalPages} pagina${totalPages > 1 ? 's' : ''})...`);
                 let adjuntoData = await extractAdjuntoFields(extractionText);
 
                 let hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
 
-                // Paso 3C: Si faltan campos críticos, intentar con la página siguiente (Vision+1)
-                const nextPageIndex = pageIndex + 1;
-                if (!hasCriticalFields && nextPageIndex < numPages) {
-                    try {
-                        const nextPng = await extractPageAsPng(tiffPath, nextPageIndex, HIGH_RES_WIDTH);
-                        const nextSizeKB = (nextPng.length / 1024).toFixed(1);
-                        logger.info(`  [VISION+1] Campos criticos vacios. Transcribiendo pagina siguiente ${nextPageIndex + 1}/${numPages} (${nextSizeKB} KB)...`);
-                        const nextPageText = (await transcribeWithVision(nextPng, nextPageIndex + 1)) || '';
+                // Vision+1: Si no hay continuaciones detectadas y faltan campos críticos
+                if (continuationTexts.length === 0 && !hasCriticalFields) {
+                    const nextPageIndex = pageIndex + 1;
+                    if (nextPageIndex < numPages) {
+                        try {
+                            const nextPng = await extractPageAsPng(tiffPath, nextPageIndex, HIGH_RES_WIDTH);
+                            const nextSizeKB = (nextPng.length / 1024).toFixed(1);
+                            logger.info(`  [VISION+1] Campos criticos vacios. Transcribiendo pagina ${nextPageIndex + 1}/${numPages} (${nextSizeKB} KB)...`);
+                            const nextPageText = (await transcribeWithVision(nextPng, nextPageIndex + 1)) || '';
 
-                        if (nextPageText.trim().length > 0) {
-                            extractionText = visionText + '\n\n' + nextPageText;
-                            logger.info(`  [EXTRACT] Re-extrayendo con 2 paginas (${extractionText.length} chars)...`);
-                            adjuntoData = await extractAdjuntoFields(extractionText);
-                            hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
+                            if (nextPageText.trim().length > 0) {
+                                extractionText = visionText + '\n\n' + nextPageText;
+                                logger.info(`  [EXTRACT] Re-extrayendo con 2 paginas (${extractionText.length} chars)...`);
+                                adjuntoData = await extractAdjuntoFields(extractionText);
+                                hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
+                            }
+                        } catch (nextErr) {
+                            logger.warn(`  [VISION+1] Error en pagina ${nextPageIndex + 1}: ${nextErr.message}`);
                         }
-                    } catch (nextErr) {
-                        logger.warn(`  [VISION+1] Error en pagina ${nextPageIndex + 1}: ${nextErr.message}`);
                     }
                 }
 
-                // Paso 3D: Fallback paginas anteriores con Vision
+                // Fallback: páginas anteriores con Vision
                 if (!hasCriticalFields && pageIndex > coverPageCount) {
                     const startIdx = Math.max(coverPageCount, pageIndex - MAX_PREV_PAGES_FALLBACK);
                     logger.info(`  [FALLBACK] Campos criticos vacios. Buscando contexto en paginas anteriores ${startIdx + 1}-${pageNum} con Vision...`);
@@ -1048,13 +1095,19 @@ export async function processFile(tiffPath, outputDir) {
                     id_buscado: matchResult.code,
                     id_encontrado: identifiedNumber,
                     pagina: pageNum,
+                    paginas_continuacion: continuationTexts.length > 0 ? continuationTexts.length : undefined,
                     confianza: matchResult.score,
                     ...adjuntoData
                 });
 
+                // Avanzar pageIndex más allá de las páginas de continuación ya procesadas
+                if (continuationTexts.length > 0) {
+                    pageIndex += continuationTexts.length;
+                }
+
             } catch (err) {
-                logger.error(`  [ERROR] Pagina ${pageNum}/${numPages}: ${err.message}`);
-                allText.push(`[ERROR] Pagina ${pageNum}: ${err.message}`);
+                logger.error(`  [ERROR] Pagina ${idResult.pageNum}/${numPages}: ${err.message}`);
+                allText[pageIndex] = `[ERROR] Pagina ${idResult.pageNum}: ${err.message}`;
                 errorCount++;
             }
         }
@@ -1142,21 +1195,84 @@ export async function processFile(tiffPath, outputDir) {
     stream.end();
     await new Promise(resolve => stream.on('finish', resolve));
 
-    // JSON de salida
+    // ── JSON de salida con auditoria y deteccion de errores ──────────
+
+    // Detectar errores y advertencias en los adjuntos extraidos
+    const adjuntosConError = ubicacion_adjuntos.filter(a => a._error);
+    const adjuntosConTruncado = ubicacion_adjuntos.filter(a => a._advertencia_truncado);
+    const advertencias = [];
+
+    if (adjuntosConError.length > 0) {
+        advertencias.push(`${adjuntosConError.length} adjunto(s) con error de extraccion: ${adjuntosConError.map(a => a.id_buscado).join(', ')}`);
+    }
+    if (adjuntosConTruncado.length > 0) {
+        advertencias.push(`${adjuntosConTruncado.length} adjunto(s) con texto truncado (posible perdida de demandados): ${adjuntosConTruncado.map(a => a.id_buscado).join(', ')}`);
+    }
+    if (notFound.length > 0) {
+        advertencias.push(`${notFound.length} codigo(s) no encontrados en el documento`);
+    }
+    if (errorCount > 0) {
+        advertencias.push(`${errorCount} pagina(s) con errores de procesamiento`);
+    }
+
+    const tieneErrores = adjuntosConError.length > 0 || notFound.length > 0 || errorCount > 0;
+
+    // Calcular hash SHA-256 del archivo original para trazabilidad
+    let archivoHash = '';
+    try {
+        const fileBuffer = fs.readFileSync(tiffPath);
+        archivoHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    } catch { /* si falla el hash, no bloquear */ }
+
     const jsonOutput = {
         archivo_origen: path.basename(tiffPath),
         fecha_procesamiento: now,
         total_paginas: numPages,
         paginas_transcritas: successCount,
         paginas_omitidas: skippedCount,
+        tiene_errores: tieneErrores,
+        advertencias: advertencias.length > 0 ? advertencias : undefined,
         ...extractedData,
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
-        codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined
+        codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined,
+        _auditoria: {
+            modelo: modelLabel(),
+            version_sistema: '2.1.0',
+            fecha_iso: new Date().toISOString(),
+            hash_archivo_sha256: archivoHash || undefined,
+            adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
+            adjuntos_truncados: adjuntosConTruncado.length > 0 ? adjuntosConTruncado.map(a => a.id_buscado) : undefined
+        }
     };
 
-    fs.writeFileSync(jsonPath, JSON.stringify(jsonOutput, null, 2), 'utf-8');
-    logger.success(`[JSON] JSON guardado: ${path.basename(jsonPath)}`);
-    logger.success(`Completado: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas`);
+    // Escritura atomica: escribir a .tmp, verificar, luego renombrar
+    const tmpJsonPath = jsonPath + '.tmp';
+    try {
+        const jsonContent = JSON.stringify(jsonOutput, null, 2);
+        fs.writeFileSync(tmpJsonPath, jsonContent, 'utf-8');
+
+        // Verificar integridad leyendo de vuelta
+        const written = fs.readFileSync(tmpJsonPath, 'utf-8');
+        JSON.parse(written); // Si falla el parseo, el JSON esta corrupto
+
+        // Rename atomico (misma particion)
+        fs.renameSync(tmpJsonPath, jsonPath);
+        logger.success(`[JSON] JSON guardado con integridad verificada: ${path.basename(jsonPath)}`);
+    } catch (jsonErr) {
+        // Si falla la escritura atomica, intentar escribir directamente
+        logger.error(`[JSON] Error en escritura atomica: ${jsonErr.message}. Intentando escritura directa...`);
+        fs.writeFileSync(jsonPath, JSON.stringify(jsonOutput, null, 2), 'utf-8');
+        logger.warn(`[JSON] JSON guardado sin verificacion de integridad: ${path.basename(jsonPath)}`);
+    } finally {
+        // Limpiar archivo temporal si existe
+        try { if (fs.existsSync(tmpJsonPath)) fs.unlinkSync(tmpJsonPath); } catch { /* ignore */ }
+    }
+
+    if (tieneErrores) {
+        logger.warn(`⚠️ Completado CON ERRORES: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas, ${adjuntosConError.length} con error`);
+    } else {
+        logger.success(`Completado: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas`);
+    }
 
     return { outputPath, jsonPath, numPages, success: successCount, errors: errorCount, skipped: skippedCount, elapsed: elapsedStr, extractedData: jsonOutput };
 }
