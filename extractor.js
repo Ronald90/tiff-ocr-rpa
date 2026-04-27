@@ -181,7 +181,12 @@ export async function extractFields(ocrText) {
                 ]
             });
 
-            const raw = response.choices[0].message.content.trim();
+            const choice = response.choices?.[0];
+            if (!choice || !choice.message || !choice.message.content) {
+                throw new Error('Respuesta del modelo vacía o sin contenido');
+            }
+
+            const raw = choice.message.content.trim();
             const parsed = safeJsonParse(raw);
 
             if (!parsed) {

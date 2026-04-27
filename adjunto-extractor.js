@@ -440,16 +440,18 @@ function normalizeAdjuntoResult(data, ocrText = '') {
         result.monto_retenido ? detectDemandadoMontoCurrency(ocrText) : ''
     );
 
-    // Normalizar cada demandado
-    result.demandados = result.demandados.map(d => ({
-        nombre: d.nombre || '',
-        razon_social: d.razon_social || '',
-        tipo_documento: d.tipo_documento || '',
-        nro_documento: d.nro_documento || '',
-        resolucion: d.resolucion || '',
-        monto: normalizeDemandadoMonto(d.monto),
-        moneda: normalizeDemandadoMoneda(d.moneda, demandadoMontoCurrency)
-    }));
+    // Normalizar cada demandado y filtrar los que no tienen identificador
+    result.demandados = result.demandados
+        .map(d => ({
+            nombre: d.nombre || '',
+            razon_social: d.razon_social || '',
+            tipo_documento: d.tipo_documento || '',
+            nro_documento: d.nro_documento || '',
+            resolucion: d.resolucion || '',
+            monto: normalizeDemandadoMonto(d.monto),
+            moneda: normalizeDemandadoMoneda(d.moneda, demandadoMontoCurrency)
+        }))
+        .filter(d => d.nombre || d.razon_social || d.nro_documento);
 
     return result;
 }
@@ -475,6 +477,15 @@ export async function extractAdjuntoFields(ocrText) {
 
     logger.info(`[ADJUNTO-EXTRACT] Extrayendo campos del adjunto (${truncated.length} chars)...`);
 
+    // Advertencia de truncamiento para trazabilidad
+    const truncationWarning = ocrText.length > maxChars
+        ? `Texto original de ${ocrText.length} caracteres fue truncado a ${maxChars}. Algunos demandados podrían no haberse extraído.`
+        : null;
+
+    if (truncationWarning) {
+        logger.warn(`[ADJUNTO-EXTRACT] ⚠️ TEXTO TRUNCADO: ${truncationWarning}`);
+    }
+
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
         const model = modelForAttempt(attempt);
 
@@ -495,7 +506,12 @@ export async function extractAdjuntoFields(ocrText) {
                 ]
             });
 
-            const raw = response.choices[0].message.content.trim();
+            const choice = response.choices?.[0];
+            if (!choice || !choice.message || !choice.message.content) {
+                throw new Error('Respuesta del modelo vacía o sin contenido');
+            }
+
+            const raw = choice.message.content.trim();
             const parsed = safeJsonParse(raw);
 
             if (!parsed) {
@@ -503,6 +519,9 @@ export async function extractAdjuntoFields(ocrText) {
             }
 
             const normalized = normalizeAdjuntoResult(parsed, truncated);
+            if (truncationWarning) {
+                normalized._advertencia_truncado = truncationWarning;
+            }
             if (!normalized.nro_cite) {
                 const fallbackNroCite = extractNroCiteFallback(truncated);
                 if (fallbackNroCite) {
