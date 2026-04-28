@@ -3,6 +3,7 @@ import path from 'path';
 import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
+import { throwIfInsufficientQuota } from './openai-errors.js';
 import { sleep, renderPrompt, modelForAttempt, safeJsonParse } from './utils.js';
 
 const ADJUNTO_EMPTY = {
@@ -534,6 +535,8 @@ export async function extractAdjuntoFields(ocrText) {
             return normalized;
 
         } catch (err) {
+            throwIfInsufficientQuota(err, `[ADJUNTO-EXTRACT] OpenAI adjunto con ${model}`);
+
             const isRateLimit = err.status === 429;
 
             if (attempt < config.maxRetries) {

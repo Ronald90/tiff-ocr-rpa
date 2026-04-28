@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import config from './config.js';
 import logger from './logger.js';
 import { processFile } from './ocr-engine.js';
+import { isInsufficientQuotaError } from './openai-errors.js';
 
 // ── Estado del watcher ────────────────────────────────────────────────
 
@@ -12,9 +13,13 @@ const HISTORY_FILE = path.resolve('./.processed_history.jsonl');
 /** Tamaño de la porción de archivo a hashear para identificación única (16 KB) */
 const HASH_SAMPLE_SIZE = 16384;
 
+/** Pausa antes de reintentar si OpenAI devuelve cuota insuficiente. */
+const OPENAI_QUOTA_PAUSE_MS = 5 * 60 * 1000;
+
 const historyMap = new Map();
 let historyStream = null;
 let processing = false;
+let openAIQuotaPauseUntil = 0;
 
 /**
  * Cargar historial en memoria al inicio (reconstruir desde log NDJSON).
@@ -116,6 +121,7 @@ function moveFile(src, destDir) {
  */
 async function processPendingFiles() {
     if (processing) return;
+    if (Date.now() < openAIQuotaPauseUntil) return;
     processing = true;
 
     try {
@@ -170,9 +176,11 @@ async function processPendingFiles() {
 
         // Worker pool con índice atómico (seguro en single-thread de Node)
         let nextIndex = 0;
+        let stopBatch = false;
+        let quotaLogged = false;
 
         async function fileWorker(workerId) {
-            while (nextIndex < pending.length) {
+            while (!stopBatch && nextIndex < pending.length) {
                 // Capturar índice antes de cualquier await
                 const idx = nextIndex;
                 nextIndex++;
@@ -204,6 +212,17 @@ async function processPendingFiles() {
                     }
 
                 } catch (err) {
+                    if (isInsufficientQuotaError(err)) {
+                        stopBatch = true;
+                        openAIQuotaPauseUntil = Date.now() + OPENAI_QUOTA_PAUSE_MS;
+                        if (!quotaLogged) {
+                            quotaLogged = true;
+                            logger.error(`[OPENAI] ${err.message}`);
+                            logger.warn('[OPENAI] Lote pausado por cuota insuficiente. Los TIFF quedan en input/ y se reintentara automaticamente en 5 min.');
+                        }
+                        continue;
+                    }
+
                     logger.error(`Error fatal procesando ${filename}: ${err.message}`);
                     try {
                         moveFile(filePath, config.errorDir);

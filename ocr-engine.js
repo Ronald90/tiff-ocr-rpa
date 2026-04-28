@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
+import { describeOpenAIError, throwIfInsufficientQuota } from './openai-errors.js';
 import { extractFields } from './extractor.js';
 import { extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
 import {
@@ -301,6 +302,7 @@ async function transcribeWithVision(pngBuffer, pageNum) {
                     logger.info(`[FALLBACK] Pagina ${pageNum} transcrita con ${model} correctamente`);
                     return fallbackText;
                 } catch (fallbackErr) {
+                    throwIfInsufficientQuota(fallbackErr, `OpenAI fallback pagina ${pageNum}`);
                     logger.error(`[FALLBACK] Error con ${model} en pagina ${pageNum}: ${fallbackErr.message}`);
                     throw fallbackErr;
                 }
@@ -308,11 +310,13 @@ async function transcribeWithVision(pngBuffer, pageNum) {
 
             return text;
         } catch (err) {
+            throwIfInsufficientQuota(err, `OpenAI pagina ${pageNum}`);
+
             if (attempt === config.maxRetries) throw err;
 
             const isRateLimit = err.status === 429;
             const waitTime = isRateLimit ? config.retryDelayMs * attempt : config.retryDelayMs;
-            const detail = err.code || err.cause?.code || err.message;
+            const detail = describeOpenAIError(err);
             logger.warn(`Reintento ${attempt}/${config.maxRetries} para pagina ${pageNum}: ${detail} (espera ${waitTime / 1000}s)`);
             await sleep(waitTime);
         } finally {
@@ -358,6 +362,7 @@ async function extractJudgeFromCrop(pngBuffer, pageNum, label) {
 
         return '';
     } catch (err) {
+        throwIfInsufficientQuota(err, `OpenAI juez pagina ${pageNum}`);
         logger.warn(`  [JUEZ] Error recuperando juez en pagina ${pageNum} (${label}): ${err.message}`);
         return '';
     } finally {
@@ -469,6 +474,7 @@ async function identifyDocNumber(pngBuffer, pageNum) {
                     result = fallbackResponse.choices[0].message.content.trim();
                     logger.info(`[ID FALLBACK] Pagina ${pageNum} identificada con ${model}`);
                 } catch (fallbackErr) {
+                    throwIfInsufficientQuota(fallbackErr, `OpenAI identificacion fallback pagina ${pageNum}`);
                     logger.error(`[ID FALLBACK] Error con ${model} en pagina ${pageNum}: ${fallbackErr.message}`);
                     throw fallbackErr;
                 }
@@ -477,6 +483,8 @@ async function identifyDocNumber(pngBuffer, pageNum) {
             return normalizeIdentifiedCode(result);
 
         } catch (err) {
+            throwIfInsufficientQuota(err, `OpenAI identificacion pagina ${pageNum}`);
+
             if (attempt === config.maxRetries) {
                 logger.error(`[ID] Error identificando numero en pagina ${pageNum}: ${err.message}`);
                 return null;
@@ -530,6 +538,7 @@ async function identifyDocNumberRetry(pngBuffer, pageNum) {
         return normalizeIdentifiedCode(result);
 
     } catch (err) {
+        throwIfInsufficientQuota(err, `OpenAI segundo intento pagina ${pageNum}`);
         logger.warn(`[ID RETRY] Error en segundo intento pagina ${pageNum}: ${err.message}`);
         return null;
     } finally {
@@ -596,6 +605,7 @@ async function identifyExpectedDocNumber(pngBuffer, pageNum, documentList) {
         logger.warn(`  [ID TARGET] Pagina ${pageNum}: respuesta "${normalized}" no esta en codigos pendientes`);
         return null;
     } catch (err) {
+        throwIfInsufficientQuota(err, `OpenAI identificacion dirigida pagina ${pageNum}`);
         logger.warn(`  [ID TARGET] Error en identificacion dirigida pagina ${pageNum} con ${model}: ${err.message}`);
         return null;
     } finally {
@@ -630,6 +640,7 @@ async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentLi
                 return found;
             }
         } catch (err) {
+            throwIfInsufficientQuota(err, `OpenAI barrido dirigido pagina ${pageNum}`);
             logger.warn(`  [ID TARGET] Error procesando ${view.label} pagina ${pageNum}: ${err.message}`);
         }
     }
@@ -643,6 +654,7 @@ async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentLi
             return found;
         }
     } catch (err) {
+        throwIfInsufficientQuota(err, `OpenAI barrido dirigido pagina ${pageNum}`);
         logger.warn(`  [ID TARGET] Error en franja superior mejorada pagina ${pageNum}: ${err.message}`);
     }
 
@@ -719,6 +731,7 @@ async function identifyPageCode(pngBuffer, pageNum, pendingAdjuntos) {
         }
 
     } catch (enhanceErr) {
+        throwIfInsufficientQuota(enhanceErr, `OpenAI identificacion pagina ${pageNum}`);
         logger.warn(`  [ENHANCE] Error en preprocesamiento pagina ${pageNum}: ${enhanceErr.message}`);
     }
 
@@ -906,6 +919,7 @@ export async function processFile(tiffPath, outputDir) {
                 idResults[result.pageIndex] = result;
 
                 if (result.error) {
+                    throwIfInsufficientQuota(result.error, `OpenAI pagina ${result.pageNum}`);
                     logger.error(`  [ERROR] Pagina ${result.pageNum}/${numPages}: ${result.error.message}`);
                     errorCount++;
                     continue;
@@ -943,7 +957,7 @@ export async function processFile(tiffPath, outputDir) {
         // FASE 3: Vision selectiva + Extracción + Detección de continuación
         // =================================================================
 
-        logger.info(`[FASE 3] Transcribiendo paginas con match y detectando continuaciones...`);
+        logger.info('[FASE 3] Transcribiendo paginas con match y detectando continuaciones...');
 
         for (let pageIndex = coverPageCount; pageIndex < numPages; pageIndex++) {
             const idResult = idResults[pageIndex];
@@ -1012,6 +1026,7 @@ export async function processFile(tiffPath, outputDir) {
                             break; // Página vacía → fin de continuación
                         }
                     } catch (contErr) {
+                        throwIfInsufficientQuota(contErr, `OpenAI continuacion pagina ${peekIndex + 1}`);
                         logger.warn(`  [CONT] Error en pagina ${peekIndex + 1}: ${contErr.message}`);
                         break;
                     }
@@ -1048,6 +1063,7 @@ export async function processFile(tiffPath, outputDir) {
                                 hasCriticalFields = adjuntoData.nro_cite || adjuntoData.demandante || (adjuntoData.demandados && adjuntoData.demandados.length > 0);
                             }
                         } catch (nextErr) {
+                            throwIfInsufficientQuota(nextErr, `OpenAI vision+1 pagina ${nextPageIndex + 1}`);
                             logger.warn(`  [VISION+1] Error en pagina ${nextPageIndex + 1}: ${nextErr.message}`);
                         }
                     }
@@ -1066,6 +1082,7 @@ export async function processFile(tiffPath, outputDir) {
                             combinedText += prevText + '\n\n';
                             logger.info(`  [FALLBACK] Pagina ${prevIdx + 1} transcrita con Vision para contexto`);
                         } catch (prevErr) {
+                            throwIfInsufficientQuota(prevErr, `OpenAI fallback pagina ${prevIdx + 1}`);
                             logger.warn(`  [FALLBACK] Error Vision en pagina ${prevIdx + 1}: ${prevErr.message}`);
                         }
                     }
@@ -1106,6 +1123,7 @@ export async function processFile(tiffPath, outputDir) {
                 }
 
             } catch (err) {
+                throwIfInsufficientQuota(err, `OpenAI pagina ${idResult.pageNum}`);
                 logger.error(`  [ERROR] Pagina ${idResult.pageNum}/${numPages}: ${err.message}`);
                 allText[pageIndex] = `[ERROR] Pagina ${idResult.pageNum}: ${err.message}`;
                 errorCount++;

@@ -3,6 +3,7 @@ import path from 'path';
 import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
+import { throwIfInsufficientQuota } from './openai-errors.js';
 import { sleep, renderPrompt, modelForAttempt, safeJsonParse } from './utils.js';
 
 const MAX_EXTRACT_CHARS = 24000;
@@ -200,6 +201,8 @@ export async function extractFields(ocrText) {
             logger.success(`[EXTRACT] Campos de caratula extraidos correctamente con ${model}`);
             return normalized;
         } catch (err) {
+            throwIfInsufficientQuota(err, `[EXTRACT] OpenAI caratula con ${model}`);
+
             const isRateLimit = err.status === 429;
 
             if (attempt < config.maxRetries) {
