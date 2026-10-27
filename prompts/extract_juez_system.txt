@@ -8,6 +8,8 @@ REGLAS:
 - No infieras el nombre a partir del juzgado, la ciudad ni el contexto del expediente.
 - Si solo ves "SECRETARIA", "SECRETARIO", "VOCAL", "OFICIAL DE DILIGENCIAS", "AUXILIAR" u otro cargo distinto, responde NO_ENCONTRADO.
 - Si solo ves el cargo del juez pero no el nombre, responde NO_ENCONTRADO.
+- No devuelvas frases del cuerpo del documento. Textos sobre cuentas, salarios, pensiones, jubilaciones, montepios, rentas, vejez, invalidez, montos, procesos o retenciones no son nombres.
+- El nombre debe ser una persona visible junto al sello/firma, normalmente arriba o al lado de "JUEZ" o "JUEZA".
 - Si el nombre aparece parcialmente visible, conserva lo visible y usa [ILEGIBLE] para la parte dudosa.
 - No devuelvas cargos, explicaciones, JSON ni texto adicional.
 

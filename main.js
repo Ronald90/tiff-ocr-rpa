@@ -39,6 +39,11 @@ try {
     console.log('='.repeat(60));
     console.log('\n[DATA] Datos extraídos:');
     console.log(JSON.stringify(result.extractedData, null, 2));
+
+    if (result.extractedData?.tiene_errores) {
+        console.error('\n[LEGAL] Resultado con errores criticos. Revisa advertencias/codigos_no_encontrados antes de usarlo.');
+        process.exitCode = 2;
+    }
 } catch (err) {
     logger.error(`Error fatal: ${err.message}`);
     process.exit(1);

@@ -71,6 +71,19 @@ describe('juez handling', () => {
         assert.equal(normalizeJuezValue(value), 'Dra. Margarita Anez Tejerina');
     });
 
+    it('limpia una salida del modelo que mezcla nombre y cargo de jueza', () => {
+        const value = 'Dra. Greta Isabel Martinez Ramos JUEZA DE PARTIDO DE TRABAJO Y S.S.';
+        assert.equal(normalizeJuezValue(value), 'Dra. Greta Isabel Martinez Ramos');
+    });
+
+    it('rechaza frases legales que no son nombre de juez', () => {
+        assert.equal(normalizeJuezValue('DE VEJEZ O INVALIDEZ'), '');
+        assert.equal(normalizeJuezValue('III. POR TANTO'), '');
+        assert.equal(normalizeJuezValue('La suscrita'), '');
+        assert.equal(normalizeJuezValue('FIRMA Y SELLO DE LA'), '');
+        assert.equal(normalizeJuezValue('NO_ENCONTRADO'), '');
+    });
+
     it('extrae el nombre del juez desde el bloque de firma', () => {
         const text = [
             'Con este motivo saludo a ustedes muy atentamente.-',
@@ -81,6 +94,20 @@ describe('juez handling', () => {
         ].join('\n');
 
         assert.equal(extractJuezFallback(text), 'Margarita Anez Tejerina');
+    });
+
+    it('extrae Greta desde sello aunque antes haya texto de pensiones e invalidez', () => {
+        const text = [
+            'SALVO QUE SE TRATE DE CUENTAS DE CONVENIO PARA EL PAGO DE',
+            'SUELDOS Y SALARIOS, PENSIONES, JUBILACIONES, MONTEPIOS, RENTAS',
+            'DE VEJEZ O INVALIDEZ.',
+            '[FIRMA]',
+            'Dra. Greta Isabel Martinez Ramos',
+            'JUEZA DE PARTIDO DE TRABAJO Y S.S.',
+            'ADMINISTRATIVO, COACTIVO FISCAL Y TRIBUTARIO 1RO DE LA CAPITAL'
+        ].join('\n');
+
+        assert.equal(extractJuezFallback(text), 'Dra. Greta Isabel Martinez Ramos');
     });
 
     it('no confunde la firma de secretaria con el nombre del juez', () => {

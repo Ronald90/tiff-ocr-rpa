@@ -31,6 +31,9 @@ function normalize(str) {
 
 const MAX_CODE_DIGIT_DISTANCE = 1;
 const MIN_CONFIDENCE_THRESHOLD = 0.80;
+const CODE_PREFIXES = new Set(['R', 'P', 'K', 'B', 'H']);
+const CODE_MIN_DIGITS = 5;
+const CODE_MAX_DIGITS = 7;
 const SPANISH_MONTHS = {
     ENE: '01',
     ENERO: '01',
@@ -61,6 +64,104 @@ const SPANISH_MONTHS = {
     DICIEMBRE: '12'
 };
 
+function mapDigitLikeChar(char = '') {
+    if (/\d/.test(char)) return char;
+    const upper = char.toUpperCase();
+    if (upper === 'I' || upper === 'L' || char === '|') return '1';
+    if (upper === 'O' || upper === 'Q') return '0';
+    if (upper === 'S') return '5';
+    return '';
+}
+
+function isCodeSeparator(char = '') {
+    return /[\s\-–—./\\]/.test(char);
+}
+
+function isRiskyDigitLikeChar(char = '') {
+    return /^[OQSoqs]$/.test(char);
+}
+
+function normalizeDigitLikeChars(raw = '') {
+    let digits = '';
+    for (const char of String(raw)) {
+        const mapped = mapDigitLikeChar(char);
+        if (mapped) digits += mapped;
+    }
+    return digits;
+}
+
+function nextNonSeparatorChar(text, startIndex) {
+    for (let index = startIndex; index < text.length; index++) {
+        if (!isCodeSeparator(text[index])) return text[index];
+    }
+    return '';
+}
+
+function scanDigitsAfterPrefix(text, startIndex) {
+    let digits = '';
+    let index = startIndex;
+    const maxScanLength = 40;
+    let previousWasSeparator = false;
+
+    while (index < text.length && isCodeSeparator(text[index])) {
+        index++;
+    }
+
+    const scanEnd = Math.min(text.length, index + maxScanLength);
+    for (; index < scanEnd; index++) {
+        const char = text[index];
+        const mapped = mapDigitLikeChar(char);
+
+        if (mapped) {
+            const nextSignificant = nextNonSeparatorChar(text, index + 1);
+            const riskyTrailingLetter = isRiskyDigitLikeChar(char) &&
+                digits.length >= CODE_MIN_DIGITS &&
+                previousWasSeparator &&
+                !mapDigitLikeChar(nextSignificant);
+
+            if (riskyTrailingLetter) break;
+
+            digits += mapped;
+            if (digits.length === CODE_MAX_DIGITS) {
+                const nextSignificant = nextNonSeparatorChar(text, index + 1);
+                return mapDigitLikeChar(nextSignificant) ? '' : digits;
+            }
+            previousWasSeparator = false;
+            continue;
+        }
+
+        if (isCodeSeparator(char)) {
+            if (digits.length >= CODE_MIN_DIGITS) break;
+            previousWasSeparator = true;
+            continue;
+        }
+
+        break;
+    }
+
+    return digits.length >= CODE_MIN_DIGITS && digits.length <= CODE_MAX_DIGITS
+        ? digits
+        : '';
+}
+
+function extractPrefixedCodeDigits(text = '') {
+    const source = String(text);
+    const codes = [];
+
+    for (let index = 0; index < source.length; index++) {
+        const char = source[index].toUpperCase();
+        if (!CODE_PREFIXES.has(char)) continue;
+
+        const previous = source[index - 1] || '';
+        if (/[A-Z0-9]/i.test(previous)) continue;
+
+        const digits = scanDigitsAfterPrefix(source, index + 1);
+        if (digits) codes.push(digits);
+    }
+
+    return codes;
+}
+
 function normalizeMonthToken(token = '') {
     const upper = token
         .normalize('NFD')
@@ -88,28 +189,30 @@ function buildDateKey(dayToken, monthToken, yearToken) {
 }
 
 function normalizeLooseCodeCandidate(raw = '') {
-    return raw
-        .toUpperCase()
-        .replace(/^[RPKBH]\s*[-–—./]?\s*/i, '')
-        .replace(/[I|L]/g, '1')
-        .replace(/[OQ]/g, '0')
-        .replace(/S/g, '5')
-        .replace(/\D/g, '');
+    return normalizeDigitLikeChars(String(raw).replace(/^[RPKBH]\s*[-–—./]?\s*/i, ''));
 }
 
 function collectLooseCodeCandidatesFromLines(lines) {
     const seen = new Set();
     const candidates = [];
-    const regex = /(?:[RrPpKkBbHh]\s*[-–—./]?\s*)?(?:[0-9Iil|/\\]\s*){5,8}/g;
+    const regex = /(?:[0-9Iil|OQoqSs]\s*[-–—./\\]?\s*){5,8}/g;
+
+    function addCandidate(raw) {
+        const normalized = normalizeLooseCodeCandidate(raw);
+        if (normalized.length < CODE_MIN_DIGITS || normalized.length > CODE_MAX_DIGITS) return;
+        if (seen.has(normalized)) return;
+        seen.add(normalized);
+        candidates.push(normalized);
+    }
 
     for (const line of lines) {
+        for (const digits of extractPrefixedCodeDigits(line)) {
+            addCandidate(digits);
+        }
+
         const matches = line.match(regex) || [];
         for (const match of matches) {
-            const normalized = normalizeLooseCodeCandidate(match);
-            if (normalized.length < 5 || normalized.length > 7) continue;
-            if (seen.has(normalized)) continue;
-            seen.add(normalized);
-            candidates.push(normalized);
+            addCandidate(match);
         }
     }
 
@@ -169,8 +272,8 @@ export function findBestMatchInText(query, text) {
 export function extractDocCode(docText) {
     if (!docText) return null;
 
-    const match = docText.match(/\bR\s*[-.]?\s*((?:\d\s*){5,7})\b/i);
-    if (match) return `R-${match[1].replace(/\s+/g, '')}`;
+    const prefixedDigits = extractPrefixedCodeDigits(docText)[0];
+    if (prefixedDigits) return `R-${prefixedDigits}`;
 
     const digitsOnly = docText.match(/\b(\d{5,7})\b/);
     if (digitsOnly) return `R-${digitsOnly[1]}`;
@@ -189,12 +292,10 @@ export function extractDocCode(docText) {
 export function extractRCodes(text) {
     if (!text) return [];
 
-    const regex = /R\s*[-.]?\s*((?:\d\s*){5,7})/gi;
     const codes = [];
-    let match;
 
-    while ((match = regex.exec(text)) !== null) {
-        codes.push(`R-${match[1].replace(/\s+/g, '')}`);
+    for (const digits of extractPrefixedCodeDigits(text)) {
+        codes.push(`R-${digits}`);
     }
 
     return [...new Set(codes)];
@@ -247,21 +348,25 @@ export function matchSingleNumber(identifiedNumber, documentList, options = {}) 
         ? options.maxLengthDelta
         : 0;
 
-    // Pre-normalizar el código identificado: convertir prefijos manuscritos comunes a R-
-    let normalizedIdentified = identifiedNumber.trim();
-    // Reemplazar prefijos confusos de letras: "P-", "K-", "B-", "h-" -> "R-".
-    // Si no aparece letra, se comparan solo digitos con aproximacion controlada.
-    normalizedIdentified = normalizedIdentified.replace(/^[PpKkBbHh]\s*[-–—.]\s*/, 'R-');
+    const digitVariants = new Set();
+    for (const code of extractRCodes(identifiedNumber)) {
+        digitVariants.add(code.replace(/\D/g, ''));
+    }
 
-    // Comparar tanto con el original como con el normalizado
-    const variants = [
-        normalize(normalizedIdentified),
-        normalize(identifiedNumber),
-        normalize(normalizedIdentified).replace(/^R/, ''),
-        normalize(identifiedNumber).replace(/^R/, '')
-    ];
-    // Eliminar duplicados
-    const uniqueVariants = [...new Set(variants)];
+    const extractedIdentifiedCode = extractDocCode(identifiedNumber);
+    if (extractedIdentifiedCode?.startsWith('R-')) {
+        digitVariants.add(extractedIdentifiedCode.replace(/\D/g, ''));
+    }
+
+    const looseDigits = normalizeLooseCodeCandidate(identifiedNumber);
+    if (looseDigits.length >= CODE_MIN_DIGITS && looseDigits.length <= CODE_MAX_DIGITS) {
+        digitVariants.add(looseDigits);
+    }
+
+    const uniqueDigitVariants = [...digitVariants];
+    if (uniqueDigitVariants.length === 0) {
+        return { matched: false, documento: null, code: null, score: 0, similarCodesDetected: hasSimilarCodes };
+    }
 
     let bestScore = 0;
     let bestDoc = null;
@@ -274,38 +379,27 @@ export function matchSingleNumber(identifiedNumber, documentList, options = {}) 
         const code = extractDocCode(doc);
         if (!code) continue;
 
-        const cleanCode = normalize(code);
-        const codeDigits = cleanCode.replace(/\D/g, '');
-        const codeVariants = [cleanCode, codeDigits];
+        const codeDigits = normalizeLooseCodeCandidate(code);
 
-        for (const cleanIdentified of uniqueVariants) {
-            const identifiedDigits = cleanIdentified.replace(/\D/g, '');
+        for (const identifiedDigits of uniqueDigitVariants) {
             if (Math.abs(identifiedDigits.length - codeDigits.length) > maxLengthDelta) {
                 continue;
             }
 
-            const hasRPrefix = cleanIdentified.startsWith('R');
-            const targetVariants = hasRPrefix
-                ? codeVariants
-                : [codeDigits];
+            const dist = levenshteinDistance(identifiedDigits, codeDigits);
+            const maxLen = Math.max(identifiedDigits.length, codeDigits.length);
+            const score = maxLen === 0 ? 0 : Math.max(0, 1 - (dist / maxLen));
+            const validScore = dist <= maxDigitDistance;
 
-            for (const cleanTarget of targetVariants) {
-                // Comparación directa con Levenshtein
-                const dist = levenshteinDistance(cleanIdentified, cleanTarget);
-                const maxLen = Math.max(cleanIdentified.length, cleanTarget.length);
-                const score = maxLen === 0 ? 0 : Math.max(0, 1 - (dist / maxLen));
-                const validScore = dist <= maxDigitDistance;
-
-                if (validScore && (score > bestScore || (score === bestScore && dist < bestDistance))) {
-                    bestScore = score;
-                    bestDistance = dist;
-                    bestDoc = doc;
-                    bestCode = code;
-                    bestSameDigitLength = true;
-                    ambiguousBest = false;
-                } else if (validScore && score === bestScore && dist === bestDistance && code !== bestCode) {
-                    ambiguousBest = true;
-                }
+            if (validScore && (score > bestScore || (score === bestScore && dist < bestDistance))) {
+                bestScore = score;
+                bestDistance = dist;
+                bestDoc = doc;
+                bestCode = code;
+                bestSameDigitLength = true;
+                ambiguousBest = false;
+            } else if (validScore && score === bestScore && dist === bestDistance && code !== bestCode) {
+                ambiguousBest = true;
             }
         }
     }

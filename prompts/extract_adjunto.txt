@@ -258,6 +258,8 @@ Busca de forma exhaustiva en todo el documento, incluyendo:
 REGLAS:
 - Si el nombre del juez esta en la firma y el cargo esta en otra linea, devuelve solo la linea del nombre visible.
 - No confundas juez con secretaria, oficial de diligencias, vocal, auxiliar ni otros cargos.
+- No uses texto del cuerpo del oficio como juez. Frases sobre cuentas, pensiones, jubilaciones, rentas, vejez, invalidez, montos, demandantes, demandados, procesos o retenciones NO son nombres de juez.
+- Si el texto cercano dice solo "JUEZA/JUEZ DE PARTIDO..." sin un nombre personal visible encima o junto al sello/firma, devuelve "".
 - Si solo ves el cargo del juez pero no el nombre, devuelve "".
 Si no se encuentra, devuelve "".
 

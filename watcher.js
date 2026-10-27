@@ -190,8 +190,9 @@ async function processPendingFiles() {
 
                 try {
                     const result = await processFile(filePath, config.outputDir);
+                    const hasCriticalErrors = result.extractedData?.tiene_errores;
 
-                    if (result.success > 0) {
+                    if (result.success > 0 && !hasCriticalErrors) {
                         const historyData = {
                             date: new Date().toISOString(),
                             pages: result.numPages,
@@ -206,6 +207,9 @@ async function processPendingFiles() {
 
                         moveFile(filePath, config.processedDir);
                         logger.success(`[OK] ${filename} -> processed/`);
+                    } else if (result.success > 0 && hasCriticalErrors) {
+                        logger.error(`[LEGAL] ${filename} terminado con errores criticos. Revisar JSON/TXT; se mueve a error/.`);
+                        moveFile(filePath, config.errorDir);
                     } else {
                         logger.error(`Todas las páginas fallaron para ${filename}`);
                         moveFile(filePath, config.errorDir);

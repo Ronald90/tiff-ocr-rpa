@@ -2,7 +2,7 @@
 
 Sistema RPA para procesar archivos TIFF multipágina mediante Vision con el modelo configurado en `.env` y extracción automática de datos estructurados en JSON.
 
-Modelo recomendado para máxima precisión legal: `OPENAI_MODEL=gpt-5.4-pro`. Todas las páginas se transcriben con Vision usando imágenes con `detail: "high"` y las extracciones estructuradas usan JSON Schema estricto.
+Modelo configurado en la plantilla: `OPENAI_MODEL=gpt-5.4`. Este modelo admite Vision, Chat Completions y las extracciones con JSON Schema estricto que usa el proyecto. `gpt-5.4-pro` requiere la API Responses y no admite salidas estructuradas, por lo que no es compatible con este flujo. Las imágenes se envían con `detail: "high"`.
 
 ## Requisitos
 
@@ -78,7 +78,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 |---|---|---|
 | `OPENAI_API_KEY` | — | API key de OpenAI (requerida) |
 | `OPENAI_MODEL` | — | Modelo a usar (requerido) |
-| `CONCURRENCY` | `2` | Páginas procesadas en paralelo por archivo |
+| `CONCURRENCY` | `2` | Páginas identificadas y transcritas en paralelo por archivo; la extracción de adjuntos mantiene el orden del TIFF |
 | `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Reintentos por página |
 | `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo de imagen en px (redimensionamiento). Para documentos legales escaneados se recomienda `4096` si el costo/latencia lo permite |

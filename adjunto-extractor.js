@@ -172,6 +172,31 @@ function isHonorificOnly(line = '') {
     return /^(?:Dr|Dra|Abog|Abg|Lic|Msc)\.?$/i.test(normalizeLooseLine(line));
 }
 
+function isLikelyNonNamePhrase(value = '') {
+    const text = normalizeLooseLine(value);
+    if (!text) return true;
+
+    const visibleWords = text
+        .replace(/\[ILEGIBLE\]/gi, ' ')
+        .replace(/\b(?:Dr|Dra|Abog|Abg|Lic|Msc)\.?\b/gi, ' ')
+        .replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ'\- ]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!visibleWords) return true;
+
+    const legalNonNameKeywords = /\b(?:NO\s+ENCONTRADO|POR\s+TANTO|SUSCRIT[AO]|FIRMA|SELLO|VEJEZ|INVALIDEZ|PENSION(?:ES)?|JUBILACI(?:O|Ó)N(?:ES)?|MONTEP(?:I|Í)O(?:S)?|RENTA(?:S)?|SUELDO(?:S)?|SALARIO(?:S)?|CUENTA(?:S)?|CONVENIO|PAGO|RETENCI(?:O|Ó)N|SUSPENSI(?:O|Ó)N|FONDO(?:S)?|MONTO|LITERAL|NUMERAL|BOLIVIANO(?:S)?|PROCESO|DEMANDANTE|DEMANDADO(?:S)?|EMPRESA|ASOCIACI(?:O|Ó)N|CONSTRUCTORA|CONSULTORA|SERVICIO(?:S)?|INGENIERIA|AMBIENTE|GOBIERNO|AUTONOMO)\b/i;
+    if (legalNonNameKeywords.test(visibleWords)) return true;
+
+    const tokens = visibleWords.split(/\s+/).filter(Boolean);
+    const connectorTokens = tokens.filter(token => /^(?:DE|DEL|LA|LAS|LOS|EL|Y|O|E)$/i.test(token));
+
+    if (/^(?:DE|DEL|LA|LAS|LOS|EL|Y|O|E)\b/i.test(visibleWords)) return true;
+    if (tokens.length > 0 && connectorTokens.length / tokens.length > 0.45) return true;
+
+    return false;
+}
+
 function cleanJuezCandidate(value = '') {
     const cleaned = normalizeLooseLine(value)
         .replace(/^\[FIRMA\]\s*/i, '')
@@ -193,8 +218,9 @@ function cleanJuezCandidate(value = '') {
 
     if (!visibleWords) return '';
     if (/\d/.test(visibleWords)) return '';
+    if (isLikelyNonNamePhrase(visibleWords)) return '';
 
-    const forbiddenKeywords = /\b(?:SECRETARI(?:A|O)|VOCAL|OFICIAL|AUXILIAR|TRIBUNAL|JUZGADO|BOLIVIA|PRESENTE|OFICIO|REFERENCIA|REF|EXP|NUREJ|CUD|ASFI|AUTORIDAD|DIRECTOR|PUBLIC[AO]|CIVIL|COMERCIAL|FAMILIA|PENAL|SOCIAL|TRABAJO|PARTIDO|INSTRUCCION)\b/i;
+    const forbiddenKeywords = /\b(?:SECRETARI(?:A|O)|VOCAL|OFICIAL|AUXILIAR|TRIBUNAL|JUZGADO|BOLIVIA|PRESENTE|OFICIO|REFERENCIA|REF|EXP|NUREJ|CUD|ASFI|AUTORIDAD|DIRECTOR|PUBLIC[AO]|CIVIL|COMERCIAL|FAMILIA|PENAL|SOCIAL|TRABAJO|PARTIDO|INSTRUCCION|ADMINISTRATIV[AO]|COACTIV[AO]|FISCAL|TRIBUTARI[AO]|CAPITAL)\b/i;
     if (forbiddenKeywords.test(visibleWords)) return '';
 
     const tokens = visibleWords.split(/\s+/).filter(Boolean);

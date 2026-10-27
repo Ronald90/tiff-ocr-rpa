@@ -27,6 +27,23 @@ describe('extractDocCode', () => {
         assert.equal(extractDocCode('R.266293 algo'), 'R-266293');
     });
 
+    it('extrae codigo aunque la fecha venga pegada al codigo', () => {
+        assert.equal(extractDocCode('R-251991DE30DE OCTUBRE DE 2025'), 'R-251991');
+    });
+
+    it('normaliza digitos ambiguos en codigo de caratula', () => {
+        assert.equal(extractDocCode('R-25I991 DE 30 DE OCTUBRE DE 2025'), 'R-251991');
+    });
+
+    it('no arrastra digitos de fecha despues del codigo', () => {
+        assert.equal(extractDocCode('R-251991 30 DE OCTUBRE DE 2025'), 'R-251991');
+    });
+
+    it('no toma los primeros 7 digitos de un numero R demasiado largo', () => {
+        const result = matchSingleNumber('R-1208407162', ['R-1208407 DE 12 DE NOVIEMBRE DE 2025']);
+        assert.equal(result.matched, false);
+    });
+
     it('extrae codigo R con digitos separados por espacios', () => {
         assert.equal(extractDocCode('R-26 912 DE 12 DE NOVIEMBRE DE 2025'), 'R-26912');
     });
@@ -89,6 +106,21 @@ describe('extractRCodes', () => {
     it('maneja formato con espacios internos entre digitos', () => {
         const codes = extractRCodes('Recibido R-26 912 en sello ASFI');
         assert.deepEqual(codes, ['R-26912']);
+    });
+
+    it('maneja codigo partido por salto de linea', () => {
+        const codes = extractRCodes('Sello ASFI\nR-\n251991\nRecepcion');
+        assert.deepEqual(codes, ['R-251991']);
+    });
+
+    it('maneja prefijo o digitos confundidos visualmente', () => {
+        const codes = extractRCodes('Recibido P-25I991 en sello ASFI');
+        assert.deepEqual(codes, ['R-251991']);
+    });
+
+    it('no agrega letras de palabras posteriores como digitos', () => {
+        const codes = extractRCodes('Recibido R-251991 SEÑOR JUEZ');
+        assert.deepEqual(codes, ['R-251991']);
     });
 });
 
@@ -159,6 +191,12 @@ describe('matchSingleNumber', () => {
         assert.equal(result.code, 'R-266293');
     });
 
+    it('match con digito ambiguo I leído como 1', () => {
+        const result = matchSingleNumber('R-25I991', ['R-251991 DE 30 DE OCTUBRE DE 2025']);
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-251991');
+    });
+
     it('no match con número inexistente', () => {
         const result = matchSingleNumber('R-999999', documentList);
         assert.equal(result.matched, false);
@@ -202,6 +240,17 @@ describe('matchSingleNumber', () => {
         assert.equal(result.matched, true);
         assert.equal(result.code, 'R-258122');
     });
+
+    it('prefiere codigo exacto aunque la caratula tenga fecha pegada y haya codigos similares', () => {
+        const docs = [
+            'R-251991DE30DE OCTUBRE DE 2025',
+            'R-251992 DE 30 DE OCTUBRE DE 2025'
+        ];
+        const result = matchSingleNumber('R-251991', docs);
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-251991');
+        assert.equal(result.documento, 'R-251991DE30DE OCTUBRE DE 2025');
+    });
 });
 
 // ── matchPageWithDocuments ─────────────────────────────────────────────
@@ -237,6 +286,11 @@ describe('context-aware page matching', () => {
     it('extrae candidatos flexibles desde el sello ASFI', () => {
         const candidates = extractLooseCodeCandidates('ASFI\n07 NOV 2025\n258/22\nLP');
         assert.deepEqual(candidates, ['25822']);
+    });
+
+    it('extrae candidatos con digitos ambiguos desde sello ASFI', () => {
+        const candidates = extractLooseCodeCandidates('ASFI\nR-25I991\nRECIBIDO');
+        assert.deepEqual(candidates, ['251991']);
     });
 
     it('recupera R-258122 desde OCR con fecha y codigo parcial del sello', () => {
