@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import openai from '../openai-client.js';
+import config from '../config.js';
 import { processFile } from '../ocr-engine.js';
 
 const originalCreate = openai.chat.completions.create;
@@ -29,12 +30,19 @@ async function runScenario(identifyPages) {
     openai.chat.completions.create = async request => {
         const formatName = request.response_format?.json_schema?.name;
         if (formatName === 'caratula_extraction') {
+            assert.equal(request.model, config.textModel);
+            assert.equal(request.reasoning_effort, config.textReasoningEffort);
             return completion(JSON.stringify({ documentos_adjuntos: ['R-12345', 'R-54321'] }));
         }
         if (formatName === 'adjunto_extraction') {
+            assert.equal(request.model, config.textModel);
+            assert.equal(request.reasoning_effort, config.textReasoningEffort);
             return completion(JSON.stringify({ nro_cite: 'CITE 100/2025', demandante: 'Persona de Prueba', juez: 'Juan Perez' }));
         }
-        if (request.max_completion_tokens === 4096) {
+        if (request.model === config.model) {
+            assert.equal(request.max_completion_tokens, config.ocrMaxOutputTokens);
+            assert.equal(request.reasoning_effort, config.ocrReasoningEffort);
+            assert.equal(request.messages[1].content[1].image_url.detail, config.ocrImageDetail);
             const call = ++visionCalls;
             if (call === 1) return completion(coverText);
 
@@ -44,7 +52,10 @@ async function runScenario(identifyPages) {
             activeVision--;
             return completion(adjuntoText(call === 2 ? 'R-12345' : 'R-54321'));
         }
-        if (request.max_completion_tokens === 300) {
+        if (request.model === config.idModel) {
+            assert.equal(request.max_completion_tokens, config.idMaxOutputTokens);
+            assert.equal(request.reasoning_effort, config.idReasoningEffort);
+            assert.equal(request.messages[1].content[1].image_url.detail, config.idImageDetail);
             return completion(identifyPages ? (idCalls++ === 0 ? 'R-12345' : 'R-54321') : 'NO_ENCONTRADO');
         }
         throw new Error(`Solicitud inesperada: ${request.max_completion_tokens}`);

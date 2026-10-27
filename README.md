@@ -2,18 +2,18 @@
 
 Sistema RPA para procesar archivos TIFF multipágina mediante Vision con el modelo configurado en `.env` y extracción automática de datos estructurados en JSON.
 
-Modelo configurado en la plantilla: `OPENAI_MODEL=gpt-5.4`. Este modelo admite Vision, Chat Completions y las extracciones con JSON Schema estricto que usa el proyecto. `gpt-5.4-pro` requiere la API Responses y no admite salidas estructuradas, por lo que no es compatible con este flujo. Las imágenes se envían con `detail: "high"`.
+Configuración de la plantilla: `gpt-6-astra` transcribe las imágenes y `gpt-6.1-terra` identifica los códigos y extrae los campos JSON. La transcripción usa `detail: "original"` para conservar el texto pequeño. Cada etapa se puede configurar por separado en `.env`.
 
 ## Requisitos
 
 - Node.js 18+
-- API key de OpenAI con acceso al modelo configurado en `OPENAI_MODEL`
+- API key de OpenAI con acceso a los modelos configurados en `.env`
 
 ## Instalación
 
 ```bash
 npm install
-# Crear/editar .env con OPENAI_API_KEY y OPENAI_MODEL
+# Crear/editar .env con OPENAI_API_KEY y los modelos
 ```
 
 ## Uso
@@ -77,11 +77,22 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | Variable | Default | Descripción |
 |---|---|---|
 | `OPENAI_API_KEY` | — | API key de OpenAI (requerida) |
-| `OPENAI_MODEL` | — | Modelo a usar (requerido) |
+| `OPENAI_MODEL` | — | Modelo que transcribe páginas y recupera el juez (requerido) |
+| `OPENAI_ID_MODEL` | — | Modelo que identifica códigos de adjuntos (requerido) |
+| `OPENAI_TEXT_MODEL` | — | Modelo que convierte el texto OCR a JSON (requerido) |
+| `OCR_IMAGE_DETAIL` | — | Detalle de imagen de transcripción: `original` o `high` |
+| `ID_IMAGE_DETAIL` | — | Detalle de imagen de identificación: `original` o `high` |
+| `OCR_REASONING_EFFORT` | — | Esfuerzo de razonamiento para OCR y recuperación de juez |
+| `ID_REASONING_EFFORT` | — | Esfuerzo de razonamiento para identificación |
+| `TEXT_REASONING_EFFORT` | — | Esfuerzo de razonamiento para extracción JSON |
+| `OCR_MAX_OUTPUT_TOKENS` | — | Tope de salida de la transcripción; una salida truncada se reintenta |
+| `ID_MAX_OUTPUT_TOKENS` | — | Tope de salida para identificar códigos o juez |
+| `OPENAI_MAX_IN_FLIGHT` | — | Máximo global de llamadas simultáneas a OpenAI entre todos los archivos |
 | `CONCURRENCY` | `2` | Páginas identificadas y transcritas en paralelo por archivo; la extracción de adjuntos mantiene el orden del TIFF |
 | `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Reintentos por página |
-| `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo de imagen en px (redimensionamiento). Para documentos legales escaneados se recomienda `4096` si el costo/latencia lo permite |
+| `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo real de cada página enviada al modelo; la plantilla usa `6000` |
+| `MAX_IMAGE_PATCHES` | — | Límite de parches de 32 px para evitar rechazos con `detail: original`; la plantilla usa `28000` |
 | `MAX_FILE_SIZE_MB` | `500` | Tamaño máximo de archivo |
 | `TIMEOUT_PER_PAGE_MS` | `180000` | Timeout por página (3 min) |
 | `WATCH_INTERVAL_MS` | `5000` | Intervalo de polling del watcher |

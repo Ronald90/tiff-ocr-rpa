@@ -20,44 +20,11 @@ import { sleep, renderPrompt, modelLabel, formatTime } from './utils.js';
 
 // ── Constantes ────────────────────────────────────────────────────────
 
-/** Resolucion alta para extraccion de paginas con Vision */
-const HIGH_RES_WIDTH = 4096;
-
-/** Fracción superior para recortar zona de sello ASFI */
-const ASFI_CROP_FRACTION = 0.40;
-
-/** Fracción superior para franja superior estándar */
-const TOP_STRIP_FRACTION = 0.36;
-
-/** Regiones de recorte para búsqueda exhaustiva de código */
-const CROP_REGIONS = {
-    topLeft: { left: 0, top: 0, width: 0.55, height: 0.42 },
-    topCenter: { left: 0.22, top: 0, width: 0.56, height: 0.42 },
-    topRight: { left: 0.45, top: 0, width: 0.55, height: 0.42 },
-    middleLeft: { left: 0, top: 0.24, width: 0.55, height: 0.42 },
-    middleCenter: { left: 0.22, top: 0.24, width: 0.56, height: 0.42 },
-    middleRight: { left: 0.45, top: 0.24, width: 0.55, height: 0.42 },
-    bottomLeft: { left: 0, top: 0.58, width: 0.55, height: 0.42 },
-    bottomCenter: { left: 0.22, top: 0.58, width: 0.56, height: 0.42 },
-    bottomRight: { left: 0.45, top: 0.58, width: 0.55, height: 0.42 },
-    leftHalf: { left: 0, top: 0, width: 0.54, height: 1 },
-    rightHalf: { left: 0.46, top: 0, width: 0.54, height: 1 },
-    upperHalf: { left: 0, top: 0, width: 1, height: 0.54 },
-    lowerHalf: { left: 0, top: 0.46, width: 1, height: 0.54 },
-    centerBand: { left: 0.15, top: 0.15, width: 0.70, height: 0.70 }
-};
-
 /** Recortes focalizados para recuperar el nombre del juez en el bloque de firma */
 const JUDGE_SIGNATURE_REGIONS = [
     { label: 'franja inferior', region: { left: 0, top: 0.68, width: 1, height: 0.32 } },
     { label: 'bloque inferior derecho', region: { left: 0.42, top: 0.56, width: 0.58, height: 0.44 } }
 ];
-
-/** Timeout para identificación rápida de documento (ms) */
-const ID_TIMEOUT_MS = 30000;
-
-/** Timeout para identificación dirigida (ms) */
-const ID_EXPECTED_TIMEOUT_MS = 45000;
 
 /** Sigma para sharpening de imagen manuscrita */
 const HANDWRITING_SHARPEN_SIGMA = 2;
@@ -67,9 +34,6 @@ const HANDWRITING_CONTRAST = 1.5;
 
 /** Longitud máxima de texto para considerar como rechazo del modelo */
 const REFUSAL_MAX_LENGTH = 200;
-
-/** Máximo de llamadas API por página antes de abandonar la identificación. */
-const MAX_API_CALLS_PER_PAGE = 8;
 
 /** Máximo de páginas previas a buscar en fallback de campos críticos */
 const MAX_PREV_PAGES_FALLBACK = 2;
@@ -87,8 +51,6 @@ const PROMPTS = {
     idDocUser: fs.readFileSync(path.resolve('./prompts/id_doc_user.txt'), 'utf-8'),
     idDocExpectedSystem: fs.readFileSync(path.resolve('./prompts/id_doc_expected_system.txt'), 'utf-8'),
     idDocExpectedUser: fs.readFileSync(path.resolve('./prompts/id_doc_expected_user.txt'), 'utf-8'),
-    idDocRetrySystem: fs.readFileSync(path.resolve('./prompts/id_doc_retry_system.txt'), 'utf-8'),
-    idDocRetryUser: fs.readFileSync(path.resolve('./prompts/id_doc_retry_user.txt'), 'utf-8'),
 };
 
 // ── Utilidades internas ───────────────────────────────────────────────
@@ -104,9 +66,13 @@ async function extractPageAsPng(tiffPath, pageIndex, maxWidth = config.maxImageW
     let pipeline = sharp(tiffPath, { page: pageIndex });
     const meta = await pipeline.metadata();
 
-    if (meta.width > maxWidth) {
+    // detail:original rechaza imágenes que superan 30 000 parches de 32 px.
+    // El margen evita exceder el límite por el redondeo de cada dimensión.
+    const maxPixels = config.maxImagePatches * 32 * 32;
+    const scale = Math.min(1, maxWidth / meta.width, Math.sqrt(maxPixels / (meta.width * meta.height)));
+    if (scale < 1) {
         pipeline = sharp(tiffPath, { page: pageIndex })
-            .resize({ width: maxWidth, withoutEnlargement: true });
+            .resize({ width: Math.max(1, Math.floor(meta.width * scale)), withoutEnlargement: true });
     }
 
     return pipeline.png({ compressionLevel: 6 }).toBuffer();
@@ -126,21 +92,6 @@ async function enhanceForHandwriting(pngBuffer) {
         .normalize()
         .sharpen({ sigma: HANDWRITING_SHARPEN_SIGMA })
         .linear(HANDWRITING_CONTRAST, 0)
-        .png()
-        .toBuffer();
-}
-
-/**
- * Recorta la seccion superior de la imagen donde tipicamente esta el sello ASFI.
- * @param {Buffer} pngBuffer - Buffer PNG de entrada
- * @param {number} fraction - Fraccion superior a conservar (ej: 0.40 = 40% superior)
- * @returns {Promise<Buffer>} - Buffer PNG recortado
- */
-async function cropTopSection(pngBuffer, fraction = ASFI_CROP_FRACTION) {
-    const meta = await sharp(pngBuffer).metadata();
-    const cropHeight = Math.floor(meta.height * fraction);
-    return sharp(pngBuffer)
-        .extract({ left: 0, top: 0, width: meta.width, height: cropHeight })
         .png()
         .toBuffer();
 }
@@ -292,14 +243,19 @@ async function transcribeWithVision(pngBuffer, pageNum) {
                         role: 'user',
                         content: [
                             { type: 'text', text: renderPrompt(PROMPTS.ocrVisionUser, { pageNum }) },
-                            { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                            { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: config.ocrImageDetail } }
                         ]
                     }
                 ],
-                max_completion_tokens: 4096
+                reasoning_effort: config.ocrReasoningEffort,
+                max_completion_tokens: config.ocrMaxOutputTokens
             }, { signal: controller.signal });
 
-            const text = response.choices[0].message.content;
+            if (response.choices?.[0]?.finish_reason === 'length') {
+                throw new Error(`OCR truncado en pagina ${pageNum}: limite de tokens de salida`);
+            }
+            const text = response.choices?.[0]?.message?.content;
+            if (text === null || text === undefined) throw new Error(`OCR sin contenido en pagina ${pageNum}`);
 
             // Detectar rechazos del modelo
             if (isModelRefusal(text)) {
@@ -317,14 +273,19 @@ async function transcribeWithVision(pngBuffer, pageNum) {
                                 role: 'user',
                                 content: [
                                     { type: 'text', text: renderPrompt(PROMPTS.ocrVisionFallbackUser, { pageNum }) },
-                                    { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                                    { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: config.ocrImageDetail } }
                                 ]
                             }
                         ],
-                        max_completion_tokens: 4096
-                    });
+                        reasoning_effort: config.ocrReasoningEffort,
+                        max_completion_tokens: config.ocrMaxOutputTokens
+                    }, { signal: controller.signal });
 
-                    const fallbackText = fallbackResponse.choices[0].message.content;
+                    if (fallbackResponse.choices?.[0]?.finish_reason === 'length') {
+                        throw new Error(`OCR fallback truncado en pagina ${pageNum}`);
+                    }
+                    const fallbackText = fallbackResponse.choices?.[0]?.message?.content;
+                    if (fallbackText === null || fallbackText === undefined) throw new Error(`OCR fallback sin contenido en pagina ${pageNum}`);
                     logger.info(`[FALLBACK] Pagina ${pageNum} transcrita con ${model} correctamente`);
                     return fallbackText;
                 } catch (fallbackErr) {
@@ -372,11 +333,12 @@ async function extractJudgeFromCrop(pngBuffer, pageNum, label) {
                             type: 'text',
                             text: renderPrompt(PROMPTS.extractJuezUser, { pageNum, label })
                         },
-                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: config.ocrImageDetail } }
                     ]
                 }
             ],
-            max_completion_tokens: 300
+            reasoning_effort: config.ocrReasoningEffort,
+            max_completion_tokens: config.idMaxOutputTokens
         }, { signal: controller.signal });
 
         const raw = response.choices[0].message.content.trim();
@@ -455,12 +417,12 @@ function normalizeIdentifiedCode(raw) {
  * @returns {Promise<string|null>} - Código normalizado o null
  */
 async function identifyDocNumber(pngBuffer, pageNum) {
-    const model = config.model;
+    const model = config.idModel;
     const imgBase64 = pngBuffer.toString('base64');
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), ID_TIMEOUT_MS);
+        const timeout = setTimeout(() => controller.abort(), config.timeoutPerPageMs);
 
         try {
             const messages = [
@@ -475,7 +437,7 @@ async function identifyDocNumber(pngBuffer, pageNum) {
                             type: 'text',
                             text: PROMPTS.idDocUser
                         },
-                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: config.idImageDetail } }
                     ]
                 }
             ];
@@ -483,7 +445,8 @@ async function identifyDocNumber(pngBuffer, pageNum) {
             const response = await openai.chat.completions.create({
                 model,
                 messages,
-                max_completion_tokens: 300
+                reasoning_effort: config.idReasoningEffort,
+                max_completion_tokens: config.idMaxOutputTokens
             }, { signal: controller.signal });
 
             let result = response.choices[0].message.content.trim();
@@ -495,8 +458,9 @@ async function identifyDocNumber(pngBuffer, pageNum) {
                     const fallbackResponse = await openai.chat.completions.create({
                         model,
                         messages,
-                        max_completion_tokens: 300
-                    });
+                        reasoning_effort: config.idReasoningEffort,
+                        max_completion_tokens: config.idMaxOutputTokens
+                    }, { signal: controller.signal });
                     result = fallbackResponse.choices[0].message.content.trim();
                     logger.info(`[ID FALLBACK] Pagina ${pageNum} identificada con ${model}`);
                 } catch (fallbackErr) {
@@ -526,52 +490,6 @@ async function identifyDocNumber(pngBuffer, pageNum) {
     return null;
 }
 
-// ── Segundo intento: prompt minimalista enfocado en digitos ───────────
-
-/**
- * Segundo intento de identificación con prompt minimalista.
- * @param {Buffer} pngBuffer - Buffer PNG de la página
- * @param {number} pageNum - Número de página
- * @returns {Promise<string|null>} - Código normalizado o null
- */
-async function identifyDocNumberRetry(pngBuffer, pageNum) {
-    const model = config.model;
-    const imgBase64 = pngBuffer.toString('base64');
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), ID_TIMEOUT_MS);
-
-    try {
-        const response = await openai.chat.completions.create({
-            model,
-            messages: [
-                {
-                    role: 'system',
-                    content: PROMPTS.idDocRetrySystem
-                },
-                {
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: PROMPTS.idDocRetryUser },
-                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
-                    ]
-                }
-            ],
-            max_completion_tokens: 300
-        }, { signal: controller.signal });
-
-        const result = response.choices[0].message.content.trim();
-        return normalizeIdentifiedCode(result);
-
-    } catch (err) {
-        throwIfInsufficientQuota(err, `OpenAI segundo intento pagina ${pageNum}`);
-        logger.warn(`[ID RETRY] Error en segundo intento pagina ${pageNum}: ${err.message}`);
-        return null;
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
 // ── Identificacion dirigida contra codigos pendientes ─────────────────
 
 /**
@@ -582,13 +500,13 @@ async function identifyDocNumberRetry(pngBuffer, pageNum) {
  * @returns {Promise<string|null>} - Código normalizado o null
  */
 async function identifyExpectedDocNumber(pngBuffer, pageNum, documentList) {
-    const model = config.model;
+    const model = config.idModel;
     const expectedCodes = [...new Set(documentList.map(extractDocCode).filter(Boolean))];
     if (expectedCodes.length === 0) return null;
 
     const imgBase64 = pngBuffer.toString('base64');
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), ID_EXPECTED_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), config.timeoutPerPageMs);
 
     try {
         const response = await openai.chat.completions.create({
@@ -608,11 +526,12 @@ async function identifyExpectedDocNumber(pngBuffer, pageNum, documentList) {
                                 codes: expectedCodes.map(code => `- ${code}`).join('\n')
                             })
                         },
-                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: 'high' } }
+                        { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}`, detail: config.idImageDetail } }
                     ]
                 }
             ],
-            max_completion_tokens: 300
+            reasoning_effort: config.idReasoningEffort,
+            max_completion_tokens: config.idMaxOutputTokens
         }, { signal: controller.signal });
 
         const result = response.choices[0].message.content.trim();
@@ -639,66 +558,10 @@ async function identifyExpectedDocNumber(pngBuffer, pageNum, documentList) {
     }
 }
 
-/**
- * Búsqueda exhaustiva: prueba múltiples vistas solapadas de la página para encontrar el código.
- * @param {Buffer} pngBuffer - Buffer PNG de la página
- * @param {number} pageNum - Número de página
- * @param {string[]} documentList - Lista de documentos adjuntos pendientes
- * @returns {Promise<string|null>} - Código encontrado o null
- */
-async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentList) {
-    const model = config.model;
-    const views = [
-        { label: 'pagina completa', create: async () => pngBuffer },
-        { label: 'franja superior', create: async () => cropTopSection(pngBuffer, TOP_STRIP_FRACTION) },
-        { label: 'mitad superior', create: async () => cropRegion(pngBuffer, CROP_REGIONS.upperHalf) },
-        { label: 'mitad inferior', create: async () => cropRegion(pngBuffer, CROP_REGIONS.lowerHalf) },
-        { label: 'zona superior derecha', create: async () => cropRegion(pngBuffer, CROP_REGIONS.topRight) },
-        { label: 'zona superior izquierda', create: async () => cropRegion(pngBuffer, CROP_REGIONS.topLeft) }
-    ];
-
-    for (const view of views) {
-        try {
-            const viewBuffer = await view.create();
-            const found = await identifyExpectedDocNumber(viewBuffer, pageNum, documentList);
-            if (found) {
-                logger.info(`  [ID TARGET] Pagina ${pageNum}: ${found} detectado en ${view.label} con ${model}`);
-                return found;
-            }
-        } catch (err) {
-            throwIfInsufficientQuota(err, `OpenAI barrido dirigido pagina ${pageNum}`);
-            logger.warn(`  [ID TARGET] Error procesando ${view.label} pagina ${pageNum}: ${err.message}`);
-        }
-    }
-
-    try {
-        const top = await cropTopSection(pngBuffer, TOP_STRIP_FRACTION);
-        const enhancedTop = await enhanceForHandwriting(top);
-        const found = await identifyExpectedDocNumber(enhancedTop, pageNum, documentList);
-        if (found) {
-            logger.info(`  [ID TARGET] Pagina ${pageNum}: ${found} detectado en franja superior mejorada con ${model}`);
-            return found;
-        }
-    } catch (err) {
-        throwIfInsufficientQuota(err, `OpenAI barrido dirigido pagina ${pageNum}`);
-        logger.warn(`  [ID TARGET] Error en franja superior mejorada pagina ${pageNum}: ${err.message}`);
-    }
-
-    return null;
-}
-
-// ── Identificación escalonada con Vision ──────────────────────────────
+// ── Identificación y rescate con Vision ───────────────────────────────
 
 /**
- * Orquesta la cascada de identificación de código en una página,
- * respetando un presupuesto máximo de llamadas API.
- *
- * Orden de intentos:
- *   1. identifyDocNumber (prompt principal)
- *   2. identifyDocNumberRetry (prompt minimalista)
- *   3. Imagen mejorada + identifyDocNumber
- *   4. Crops amplios + enhanced + identifyDocNumber
- *   5. identifyExpectedDocNumberMultiPass (barrido exhaustivo dirigido)
+ * Prueba una lectura libre y una dirigida; la auditoría OCR rescata lo restante.
  *
  * @param {Buffer} pngBuffer - Buffer PNG de la página
  * @param {number} pageNum - Número de página
@@ -706,71 +569,11 @@ async function identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, documentLi
  * @returns {Promise<string|null>} - Código identificado o null
  */
 async function identifyPageCode(pngBuffer, pageNum, pendingAdjuntos) {
-    let apiCalls = 0;
-    const budget = MAX_API_CALLS_PER_PAGE;
-
-    /** Ejecuta fn solo si queda presupuesto. Incrementa el contador. */
-    async function withBudget(fn, label) {
-        if (apiCalls >= budget) {
-            logger.debug(`  [BUDGET] Pagina ${pageNum}: presupuesto agotado (${apiCalls}/${budget}), omitiendo ${label}`);
-            return null;
-        }
-        apiCalls++;
-        return fn();
-    }
-
-    // Paso 1: Prompt principal
-    let result = await withBudget(
-        () => identifyDocNumber(pngBuffer, pageNum),
-        'identifyDocNumber'
-    );
+    const result = await identifyDocNumber(pngBuffer, pageNum);
     if (result) return result;
-
-    // Paso 2: Prompt minimalista
-    logger.info(`  [RETRY] Pagina ${pageNum} - Segundo intento con prompt alternativo...`);
-    result = await withBudget(
-        () => identifyDocNumberRetry(pngBuffer, pageNum),
-        'identifyDocNumberRetry'
-    );
-    if (result) return result;
-
-    // Paso 3: Imagen mejorada + identificación
-    logger.info(`  [RETRY] Pagina ${pageNum} - Intento con imagen mejorada (enhanced)...`);
-    try {
-        const enhancedBuffer = await enhanceForHandwriting(pngBuffer);
-        result = await withBudget(
-            () => identifyDocNumber(enhancedBuffer, pageNum),
-            'identifyDocNumber(enhanced)'
-        );
-        if (result) return result;
-
-        // Paso 4A: Franja superior + enhanced
-        if (apiCalls < budget) {
-            logger.info(`  [RETRY] Pagina ${pageNum} - Intento con franja superior + enhanced...`);
-            const croppedBuffer = await cropTopSection(pngBuffer, ASFI_CROP_FRACTION);
-            const enhancedCrop = await enhanceForHandwriting(croppedBuffer);
-            result = await withBudget(
-                () => identifyDocNumber(enhancedCrop, pageNum),
-                'identifyDocNumber(cropTop+enhanced)'
-            );
-            if (result) return result;
-        }
-
-    } catch (enhanceErr) {
-        throwIfInsufficientQuota(enhanceErr, `OpenAI identificacion pagina ${pageNum}`);
-        logger.warn(`  [ENHANCE] Error en preprocesamiento pagina ${pageNum}: ${enhanceErr.message}`);
-    }
-
-    // Paso 5: Barrido dirigido con códigos pendientes (6 vistas)
-    if (apiCalls < budget) {
-        logger.info(`  [RETRY] Pagina ${pageNum} - Barrido dirigido con codigos pendientes...`);
-        result = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingAdjuntos);
-        apiCalls += 7; // barrido dirigido consume 6 vistas + 1 enhanced
-        if (result) return result;
-    }
-
-    logger.debug(`  [BUDGET] Pagina ${pageNum}: total de llamadas API: ${apiCalls}/${budget}`);
-    return null;
+    // Una sola identificación dirigida; si sigue sin código, la auditoría
+    // transcribe la página completa con el modelo OCR y la reutiliza después.
+    return identifyExpectedDocNumber(pngBuffer, pageNum, pendingAdjuntos);
 }
 
 // ── Funcion principal exportada ───────────────────────────────────────
@@ -816,7 +619,7 @@ export async function processFile(tiffPath, outputDir) {
     // ===================================================================
 
     logger.info('[FASE 1] Transcripcion Vision de la caratula (pagina 1)...');
-    const page1Png = await extractPageAsPng(tiffPath, 0, HIGH_RES_WIDTH);
+    const page1Png = await extractPageAsPng(tiffPath, 0);
     const page1SizeKB = (page1Png.length / 1024).toFixed(1);
     const page1Text = await transcribeWithVision(page1Png, 1);
     logger.info(`  [PAGE] Pagina 1/${numPages} (${page1SizeKB} KB) - Caratula [Vision ${config.model}]`);
@@ -842,7 +645,7 @@ export async function processFile(tiffPath, outputDir) {
     const coverTexts = [page1Text];
 
     for (let ci = 1; ci < coverPageCount && ci < numPages; ci++) {
-        const coverPng = await extractPageAsPng(tiffPath, ci, HIGH_RES_WIDTH);
+        const coverPng = await extractPageAsPng(tiffPath, ci);
         const coverSizeKB = (coverPng.length / 1024).toFixed(1);
         const coverText = await transcribeWithVision(coverPng, ci + 1);
         coverTexts.push(coverText);
@@ -859,7 +662,7 @@ export async function processFile(tiffPath, outputDir) {
     const suspiciousAdjuntos = countSuspiciousAdjuntos(adjuntos);
 
     if (suspiciousAdjuntos > 0) {
-        logger.warn(`[FASE 1] Se detectaron ${suspiciousAdjuntos} adjunto(s) con formato sospechoso despues de Vision. Revisa la caratula o sube OPENAI_MODEL a un modelo mas fuerte.`);
+        logger.warn(`[FASE 1] Se detectaron ${suspiciousAdjuntos} adjunto(s) con formato sospechoso despues de Vision. Revisa la caratula y los codigos extraidos.`);
     }
 
     if (adjuntos.length === 0) {
@@ -914,7 +717,7 @@ export async function processFile(tiffPath, outputDir) {
                 const pageNum = pi + 1;
                 batchPromises.push((async () => {
                     try {
-                        const pngBuffer = await extractPageAsPng(tiffPath, pi, HIGH_RES_WIDTH);
+                        const pngBuffer = await extractPageAsPng(tiffPath, pi);
                         const sizeKB = (pngBuffer.length / 1024).toFixed(1);
                         let code = await identifyPageCode(pngBuffer, pageNum, pendingSnapshot);
 
@@ -923,7 +726,7 @@ export async function processFile(tiffPath, outputDir) {
                             const quickMatch = matchSingleNumber(code, pendingSnapshot);
                             if (!quickMatch.matched) {
                                 logger.info(`  [RETRY] Pagina ${pageNum}/${numPages} - Codigo "${code}" no coincide. Intento dirigido...`);
-                                const targetedNumber = await identifyExpectedDocNumberMultiPass(pngBuffer, pageNum, pendingSnapshot);
+                                const targetedNumber = await identifyExpectedDocNumber(pngBuffer, pageNum, pendingSnapshot);
                                 if (targetedNumber) {
                                     const targetedMatch = matchSingleNumber(targetedNumber, pendingSnapshot);
                                     if (targetedMatch.matched) {
@@ -998,7 +801,7 @@ export async function processFile(tiffPath, outputDir) {
                     const idResult = idResults[pageIndex];
                     const pageNum = pageIndex + 1;
                     try {
-                        const pngBuffer = idResult.pngBuffer || await extractPageAsPng(tiffPath, pageIndex, HIGH_RES_WIDTH);
+                        const pngBuffer = idResult.pngBuffer || await extractPageAsPng(tiffPath, pageIndex);
                         const sizeKB = idResult.sizeKB && idResult.sizeKB !== '0'
                             ? idResult.sizeKB
                             : (pngBuffer.length / 1024).toFixed(1);
@@ -1071,7 +874,7 @@ export async function processFile(tiffPath, outputDir) {
                 const idResult = idResults[pageIndex];
 
                 try {
-                    const pngBuffer = idResult.pngBuffer || await extractPageAsPng(tiffPath, pageIndex, HIGH_RES_WIDTH);
+                    const pngBuffer = idResult.pngBuffer || await extractPageAsPng(tiffPath, pageIndex);
                     const visionText = (await transcribeWithVision(pngBuffer, idResult.pageNum)) || '';
                     allText[pageIndex] = visionText;
                     prefetchedPages.add(pageIndex);
@@ -1161,17 +964,16 @@ export async function processFile(tiffPath, outputDir) {
 
                     // Candidata a continuación → transcribir
                     try {
-                        const contPng = nextIdResult.pngBuffer || await extractPageAsPng(tiffPath, peekIndex, HIGH_RES_WIDTH);
+                        const contPng = nextIdResult.pngBuffer || await extractPageAsPng(tiffPath, peekIndex);
                         const contSizeKB = (contPng.length / 1024).toFixed(1);
                         logger.info(`  [CONT] Pagina ${peekIndex + 1}/${numPages} (${contSizeKB} KB) - Posible continuacion de tabla...`);
-                        const contText = (await transcribeWithVision(contPng, peekIndex + 1)) || '';
+                        const cachedText = allText[peekIndex];
+                        const contText = cachedText || (await transcribeWithVision(contPng, peekIndex + 1)) || '';
 
                         if (contText.trim().length > 0) {
                             continuationTexts.push(contText);
                             allText[peekIndex] = contText; // Actualizar en allText (puede estar como '')
-                            successCount++;
-                            // Decrementar skippedCount ya que esta página ahora se procesa
-                            if (skippedCount > 0) skippedCount--;
+                            if (!cachedText) successCount++;
                             logger.success(`  [CONT] Pagina ${peekIndex + 1} agregada como continuacion (${contText.length} chars)`);
                         } else {
                             break; // Página vacía → fin de continuación
@@ -1200,12 +1002,12 @@ export async function processFile(tiffPath, outputDir) {
                 // Vision+1: Si no hay continuaciones detectadas y faltan campos críticos
                 if (continuationTexts.length === 0 && !hasCriticalFields) {
                     const nextPageIndex = pageIndex + 1;
-                    if (nextPageIndex < numPages) {
+                    if (nextPageIndex < numPages && !idResults[nextPageIndex]?.matchResult && !idResults[nextPageIndex]?.code) {
                         try {
-                            const nextPng = await extractPageAsPng(tiffPath, nextPageIndex, HIGH_RES_WIDTH);
+                            const nextPng = await extractPageAsPng(tiffPath, nextPageIndex);
                             const nextSizeKB = (nextPng.length / 1024).toFixed(1);
                             logger.info(`  [VISION+1] Campos criticos vacios. Transcribiendo pagina ${nextPageIndex + 1}/${numPages} (${nextSizeKB} KB)...`);
-                            const nextPageText = (await transcribeWithVision(nextPng, nextPageIndex + 1)) || '';
+                            const nextPageText = allText[nextPageIndex] || (await transcribeWithVision(nextPng, nextPageIndex + 1)) || '';
 
                             if (nextPageText.trim().length > 0) {
                                 extractionText = visionText + '\n\n' + nextPageText;
@@ -1228,8 +1030,8 @@ export async function processFile(tiffPath, outputDir) {
                     let combinedText = '';
                     for (let prevIdx = startIdx; prevIdx < pageIndex; prevIdx++) {
                         try {
-                            const prevPng = await extractPageAsPng(tiffPath, prevIdx, HIGH_RES_WIDTH);
-                            const prevText = (await transcribeWithVision(prevPng, prevIdx + 1)) || '';
+                            const prevPng = await extractPageAsPng(tiffPath, prevIdx);
+                            const prevText = allText[prevIdx] || (await transcribeWithVision(prevPng, prevIdx + 1)) || '';
                             combinedText += prevText + '\n\n';
                             logger.info(`  [FALLBACK] Pagina ${prevIdx + 1} transcrita con Vision para contexto`);
                         } catch (prevErr) {

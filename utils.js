@@ -27,12 +27,12 @@ export function renderPrompt(template, vars = {}) {
 
 /**
  * Determina qué modelo usar para un intento dado.
- * El flujo actual usa exclusivamente OPENAI_MODEL.
+ * El texto ya transcrito se extrae con OPENAI_TEXT_MODEL.
  * @param {number} _attempt - Número de intento actual (1-indexed)
  * @returns {string} - Nombre del modelo a usar
  */
 export function modelForAttempt(_attempt) {
-    return config.model;
+    return config.textModel;
 }
 
 /**
@@ -69,8 +69,8 @@ export function formatTime(seconds) {
 
 /**
  * Devuelve una etiqueta descriptiva de los modelos configurados.
- * @returns {string} - Ej: "gpt-5.4-pro"
+ * @returns {string} - Etiqueta de modelos por etapa
  */
 export function modelLabel() {
-    return config.model;
+    return `${config.model} (OCR), ${config.idModel} (ID), ${config.textModel} (extraccion)`;
 }

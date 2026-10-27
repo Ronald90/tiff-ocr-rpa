@@ -519,6 +519,7 @@ export async function extractAdjuntoFields(ocrText) {
         try {
             const response = await openai.chat.completions.create({
                 model,
+                reasoning_effort: config.textReasoningEffort,
                 max_completion_tokens: 16000,
                 response_format: ADJUNTO_RESPONSE_FORMAT,
                 messages: [
@@ -534,6 +535,9 @@ export async function extractAdjuntoFields(ocrText) {
             });
 
             const choice = response.choices?.[0];
+            if (choice?.finish_reason === 'length') {
+                throw new Error('Extraccion de adjunto truncada por limite de tokens');
+            }
             if (!choice || !choice.message || !choice.message.content) {
                 throw new Error('Respuesta del modelo vacía o sin contenido');
             }
