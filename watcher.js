@@ -207,13 +207,11 @@ async function processPendingFiles() {
                     const result = await processFile(filePath, stagingDir);
                     const hasCriticalErrors = result.extractedData?.tiene_errores;
                     const accepted = result.success > 0 && !hasCriticalErrors;
-                    const resultsDir = accepted ? config.outputDir : config.errorDir;
-
-                    for (const resultPath of [result.outputPath, result.jsonPath]) {
-                        publishedPaths.push(moveFile(resultPath, resultsDir));
-                    }
 
                     if (accepted) {
+                        for (const resultPath of [result.outputPath, result.jsonPath]) {
+                            publishedPaths.push(moveFile(resultPath, config.outputDir));
+                        }
                         moveFile(filePath, config.processedDir);
                         const historyData = {
                             date: new Date().toISOString(),
@@ -233,30 +231,21 @@ async function processPendingFiles() {
                         logger.success(`[OK] ${filename} -> processed/`);
                     } else if (result.success > 0 && hasCriticalErrors) {
                         moveFile(filePath, config.errorDir);
-                        logger.error(`[LEGAL] ${filename} terminado con errores criticos. TIFF y JSON/TXT en error/.`);
+                        logger.error(`[LEGAL] ${filename} terminado con errores criticos. Solo el TIFF se mueve a error/.`);
                     } else {
                         moveFile(filePath, config.errorDir);
-                        logger.error(`Todas las páginas fallaron para ${filename}. TIFF y JSON/TXT en error/.`);
+                        logger.error(`Todas las páginas fallaron para ${filename}. Solo el TIFF se mueve a error/.`);
                     }
 
                 } catch (err) {
                     // Si falló la publicación, retirar de output/ cualquier
-                    // resultado parcial y conservarlo junto al TIFF en error/.
+                    // resultado parcial. Los resultados fallidos no se conservan.
                     for (const publishedPath of publishedPaths) {
                         if (!publishedPath.startsWith(config.outputDir + path.sep) || !fs.existsSync(publishedPath)) continue;
                         try {
-                            moveFile(publishedPath, config.errorDir);
-                        } catch (moveErr) {
-                            logger.error(`[OUTPUT] No se pudo retirar ${publishedPath}: ${moveErr.message}`);
-                        }
-                    }
-                    if (stagingDir) {
-                        for (const stagedName of fs.readdirSync(stagingDir)) {
-                            try {
-                                moveFile(path.join(stagingDir, stagedName), config.errorDir);
-                            } catch (moveErr) {
-                                logger.error(`[OUTPUT] No se pudo conservar ${stagedName} en error/: ${moveErr.message}`);
-                            }
+                            fs.unlinkSync(publishedPath);
+                        } catch (removeErr) {
+                            logger.error(`[OUTPUT] No se pudo retirar ${publishedPath}: ${removeErr.message}`);
                         }
                     }
 
@@ -278,9 +267,12 @@ async function processPendingFiles() {
                 } finally {
                     if (stagingDir) {
                         try {
+                            for (const stagedName of fs.readdirSync(stagingDir)) {
+                                fs.unlinkSync(path.join(stagingDir, stagedName));
+                            }
                             fs.rmdirSync(stagingDir);
                         } catch (cleanupErr) {
-                            logger.warn(`[OUTPUT] Carpeta temporal pendiente ${stagingDir}: ${cleanupErr.message}`);
+                            logger.error(`[OUTPUT] No se pudo limpiar ${stagingDir}: ${cleanupErr.message}`);
                         }
                     }
                 }
