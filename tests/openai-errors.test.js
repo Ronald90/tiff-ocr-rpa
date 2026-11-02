@@ -4,7 +4,9 @@ import {
     OpenAIQuotaError,
     describeOpenAIError,
     isInsufficientQuotaError,
-    throwIfInsufficientQuota
+    isRetryableOpenAIError,
+    throwIfInsufficientQuota,
+    TruncatedOutputError
 } from '../openai-errors.js';
 
 describe('openai-errors', () => {
@@ -49,5 +51,25 @@ describe('openai-errors', () => {
             () => throwIfInsufficientQuota(err, 'OpenAI pagina 1'),
             error => error instanceof OpenAIQuotaError && error.cause === err
         );
+    });
+});
+
+describe('isRetryableOpenAIError', () => {
+    it('reintenta errores transitorios', () => {
+        for (const status of [408, 409, 429, 500, 503]) {
+            assert.equal(isRetryableOpenAIError({ status, message: 'transitorio' }), true, String(status));
+        }
+        assert.equal(isRetryableOpenAIError(new Error('Connection error.')), true);
+    });
+
+    it('no reintenta solicitudes invalidas ni cuota agotada', () => {
+        for (const status of [400, 401, 403, 404, 413, 422]) {
+            assert.equal(isRetryableOpenAIError({ status, message: 'invalida' }), false, String(status));
+        }
+        assert.equal(isRetryableOpenAIError({ status: 429, code: 'insufficient_quota' }), false);
+    });
+
+    it('deja las salidas truncadas al manejo con mas tokens', () => {
+        assert.equal(isRetryableOpenAIError(new TruncatedOutputError('truncado')), false);
     });
 });

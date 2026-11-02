@@ -14,6 +14,14 @@ export class OpenAIQuotaError extends Error {
     }
 }
 
+/** Respuesta cortada por el tope de tokens de salida (finish_reason "length"). */
+export class TruncatedOutputError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'TruncatedOutputError';
+    }
+}
+
 function firstString(...values) {
     return values.find(value => typeof value === 'string' && value.trim().length > 0) || '';
 }
@@ -69,6 +77,21 @@ export function isInsufficientQuotaError(err) {
             value.includes('exceeded your current quota') ||
             value.includes('billing hard limit')
         );
+}
+
+/**
+ * Indica si repetir la misma solicitud puede dar otro resultado. Los errores de
+ * red, timeouts, 408/409/429 y 5xx son transitorios; un 400/401/403/404/413/422
+ * fallaria igual en cada reintento.
+ * @param {Error} err
+ * @returns {boolean}
+ */
+export function isRetryableOpenAIError(err) {
+    if (isInsufficientQuotaError(err) || err instanceof TruncatedOutputError) return false;
+
+    const status = err?.status;
+    if (!Number.isInteger(status)) return true;
+    return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
 export function toOpenAIQuotaError(err, context = 'OpenAI') {

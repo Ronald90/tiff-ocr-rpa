@@ -3,10 +3,11 @@ import path from 'path';
 import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
-import { throwIfInsufficientQuota } from './openai-errors.js';
+import { isRetryableOpenAIError, throwIfInsufficientQuota, TruncatedOutputError } from './openai-errors.js';
 import { sleep, renderPrompt, modelForAttempt, safeJsonParse } from './utils.js';
 
 const MAX_EXTRACT_CHARS = 24000;
+const CARATULA_MAX_OUTPUT_TOKENS = 6000;
 
 const EMPTY_RESULT = {
     tipo_documento: '',
@@ -162,6 +163,8 @@ export async function extractFields(ocrText) {
 
     logger.info(`[EXTRACT] Procesando caratula (${truncated.length} chars de ${ocrText.length} total)`);
 
+    let maxTokens = CARATULA_MAX_OUTPUT_TOKENS;
+
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
         const model = modelForAttempt(attempt);
 
@@ -169,7 +172,7 @@ export async function extractFields(ocrText) {
             const response = await openai.chat.completions.create({
                 model,
                 reasoning_effort: config.textReasoningEffort,
-                max_completion_tokens: 6000,
+                max_completion_tokens: maxTokens,
                 response_format: CARATULA_RESPONSE_FORMAT,
                 messages: [
                     {
@@ -185,7 +188,7 @@ export async function extractFields(ocrText) {
 
             const choice = response.choices?.[0];
             if (choice?.finish_reason === 'length') {
-                throw new Error('Extraccion de caratula truncada por limite de tokens');
+                throw new TruncatedOutputError(`Extraccion de caratula truncada: limite de ${maxTokens} tokens de salida`);
             }
             if (!choice || !choice.message || !choice.message.content) {
                 throw new Error('Respuesta del modelo vacía o sin contenido');
@@ -207,9 +210,17 @@ export async function extractFields(ocrText) {
         } catch (err) {
             throwIfInsufficientQuota(err, `[EXTRACT] OpenAI caratula con ${model}`);
 
+            // Repetir con el mismo tope volveria a truncar: se reintenta una
+            // sola vez, con el doble de tokens.
+            if (err instanceof TruncatedOutputError && maxTokens === CARATULA_MAX_OUTPUT_TOKENS && attempt < config.maxRetries) {
+                maxTokens *= 2;
+                logger.warn(`[EXTRACT] Reintento ${attempt}/${config.maxRetries} con ${model} - salida truncada, ahora con ${maxTokens} tokens`);
+                continue;
+            }
+
             const isRateLimit = err.status === 429;
 
-            if (attempt < config.maxRetries) {
+            if (attempt < config.maxRetries && isRetryableOpenAIError(err)) {
                 const waitTime = isRateLimit
                     ? config.retryDelayMs * attempt * 2
                     : config.retryDelayMs;
@@ -217,7 +228,7 @@ export async function extractFields(ocrText) {
                 logger.warn(`[EXTRACT] Reintento ${attempt}/${config.maxRetries} con ${model} - ${err.message}`);
                 await sleep(waitTime);
             } else {
-                logger.error(`[EXTRACT] Fallo despues de ${config.maxRetries} intentos con ${model}: ${err.message}`);
+                logger.error(`[EXTRACT] Fallo en intento ${attempt}/${config.maxRetries} con ${model}: ${err.message}`);
                 return {
                     ...EMPTY_RESULT,
                     _error: err.message

@@ -5,7 +5,13 @@ import sharp from 'sharp';
 import config from './config.js';
 import logger from './logger.js';
 import openai from './openai-client.js';
-import { describeOpenAIError, isInsufficientQuotaError, throwIfInsufficientQuota } from './openai-errors.js';
+import {
+    describeOpenAIError,
+    isInsufficientQuotaError,
+    isRetryableOpenAIError,
+    throwIfInsufficientQuota,
+    TruncatedOutputError
+} from './openai-errors.js';
 import { extractFields } from './extractor.js';
 import { extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
 import {
@@ -226,6 +232,7 @@ function normalizeCodeForAudit(value = '') {
 async function transcribeWithVision(pngBuffer, pageNum) {
     const model = config.model;
     const imgBase64 = pngBuffer.toString('base64');
+    let maxTokens = config.ocrMaxOutputTokens;
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
         const controller = new AbortController();
@@ -248,11 +255,11 @@ async function transcribeWithVision(pngBuffer, pageNum) {
                     }
                 ],
                 reasoning_effort: config.ocrReasoningEffort,
-                max_completion_tokens: config.ocrMaxOutputTokens
+                max_completion_tokens: maxTokens
             }, { signal: controller.signal });
 
             if (response.choices?.[0]?.finish_reason === 'length') {
-                throw new Error(`OCR truncado en pagina ${pageNum}: limite de tokens de salida`);
+                throw new TruncatedOutputError(`OCR truncado en pagina ${pageNum}: limite de ${maxTokens} tokens de salida`);
             }
             const text = response.choices?.[0]?.message?.content;
             if (text === null || text === undefined) throw new Error(`OCR sin contenido en pagina ${pageNum}`);
@@ -278,11 +285,11 @@ async function transcribeWithVision(pngBuffer, pageNum) {
                             }
                         ],
                         reasoning_effort: config.ocrReasoningEffort,
-                        max_completion_tokens: config.ocrMaxOutputTokens
+                        max_completion_tokens: maxTokens
                     }, { signal: controller.signal });
 
                     if (fallbackResponse.choices?.[0]?.finish_reason === 'length') {
-                        throw new Error(`OCR fallback truncado en pagina ${pageNum}`);
+                        throw new TruncatedOutputError(`OCR fallback truncado en pagina ${pageNum}: limite de ${maxTokens} tokens de salida`);
                     }
                     const fallbackText = fallbackResponse.choices?.[0]?.message?.content;
                     if (fallbackText === null || fallbackText === undefined) throw new Error(`OCR fallback sin contenido en pagina ${pageNum}`);
@@ -299,7 +306,14 @@ async function transcribeWithVision(pngBuffer, pageNum) {
         } catch (err) {
             throwIfInsufficientQuota(err, `OpenAI pagina ${pageNum}`);
 
-            if (attempt === config.maxRetries) throw err;
+            // Repetir con el mismo tope volveria a truncar: se reintenta una
+            // sola vez, con el doble de tokens.
+            if (err instanceof TruncatedOutputError && maxTokens === config.ocrMaxOutputTokens && attempt < config.maxRetries) {
+                maxTokens *= 2;
+                logger.warn(`Reintento ${attempt}/${config.maxRetries} para pagina ${pageNum}: salida truncada, ahora con ${maxTokens} tokens`);
+                continue;
+            }
+            if (attempt === config.maxRetries || !isRetryableOpenAIError(err)) throw err;
 
             const isRateLimit = err.status === 429;
             const waitTime = isRateLimit ? config.retryDelayMs * attempt : config.retryDelayMs;
@@ -341,7 +355,7 @@ async function extractJudgeFromCrop(pngBuffer, pageNum, label) {
             max_completion_tokens: config.idMaxOutputTokens
         }, { signal: controller.signal });
 
-        const raw = response.choices[0].message.content.trim();
+        const raw = (response.choices?.[0]?.message?.content ?? '').trim();
         const normalized = normalizeJuezValue(raw);
         if (normalized) {
             logger.info(`  [JUEZ] Pagina ${pageNum} - Nombre recuperado desde ${label}: ${normalized}`);
@@ -449,7 +463,7 @@ async function identifyDocNumber(pngBuffer, pageNum) {
                 max_completion_tokens: config.idMaxOutputTokens
             }, { signal: controller.signal });
 
-            let result = response.choices[0].message.content.trim();
+            let result = (response.choices?.[0]?.message?.content ?? '').trim();
 
             // Manejar rechazos del modelo
             if (isModelRefusal(result)) {
@@ -461,7 +475,7 @@ async function identifyDocNumber(pngBuffer, pageNum) {
                         reasoning_effort: config.idReasoningEffort,
                         max_completion_tokens: config.idMaxOutputTokens
                     }, { signal: controller.signal });
-                    result = fallbackResponse.choices[0].message.content.trim();
+                    result = (fallbackResponse.choices?.[0]?.message?.content ?? '').trim();
                     logger.info(`[ID FALLBACK] Pagina ${pageNum} identificada con ${model}`);
                 } catch (fallbackErr) {
                     throwIfInsufficientQuota(fallbackErr, `OpenAI identificacion fallback pagina ${pageNum}`);
@@ -475,7 +489,7 @@ async function identifyDocNumber(pngBuffer, pageNum) {
         } catch (err) {
             throwIfInsufficientQuota(err, `OpenAI identificacion pagina ${pageNum}`);
 
-            if (attempt === config.maxRetries) {
+            if (attempt === config.maxRetries || !isRetryableOpenAIError(err)) {
                 logger.error(`[ID] Error identificando numero en pagina ${pageNum}: ${err.message}`);
                 return null;
             }
@@ -534,7 +548,7 @@ async function identifyExpectedDocNumber(pngBuffer, pageNum, documentList) {
             max_completion_tokens: config.idMaxOutputTokens
         }, { signal: controller.signal });
 
-        const result = response.choices[0].message.content.trim();
+        const result = (response.choices?.[0]?.message?.content ?? '').trim();
         const normalized = normalizeIdentifiedCode(result);
         if (!normalized) return null;
 
