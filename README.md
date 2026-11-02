@@ -4,6 +4,8 @@ Sistema RPA para procesar archivos TIFF multipágina mediante Vision con el mode
 
 Configuración de la plantilla: `gpt-6-astra` transcribe las imágenes y `gpt-6.1-terra` identifica los códigos y extrae los campos JSON. La transcripción usa `detail: "original"` para conservar el texto pequeño. Cada etapa se puede configurar por separado en `.env`.
 
+Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto.
+
 ## Requisitos
 
 - Node.js 18+
@@ -88,7 +90,7 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 | `OCR_MAX_OUTPUT_TOKENS` | — | Tope de salida de la transcripción; una salida truncada se reintenta una vez con el doble de tokens |
 | `ID_MAX_OUTPUT_TOKENS` | — | Tope de salida para identificar códigos o juez |
 | `OPENAI_MAX_IN_FLIGHT` | — | Máximo global de llamadas simultáneas a OpenAI entre todos los archivos |
-| `CONCURRENCY` | `2` | Páginas identificadas y transcritas en paralelo por archivo; la extracción de adjuntos mantiene el orden del TIFF |
+| `CONCURRENCY` | `2` | Páginas leídas y adjuntos extraídos en paralelo por archivo; los códigos se asignan en el orden del TIFF |
 | `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Intentos por llamada ante errores transitorios (red, timeout, 429, 5xx); un 400/401/403/404/422 no se reintenta |
 | `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo real de cada página enviada al modelo; la plantilla usa `6000` |

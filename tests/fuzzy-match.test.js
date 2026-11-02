@@ -9,7 +9,8 @@ import {
     extractDocDateKey,
     extractPageDateKeys,
     extractLooseCodeCandidates,
-    matchPageWithDocumentsByContext
+    matchPageWithDocumentsByContext,
+    matchPageWithDocumentsByStamp
 } from '../fuzzy-match.js';
 
 // ── extractDocCode ────────────────────────────────────────────────────
@@ -309,5 +310,42 @@ describe('context-aware page matching', () => {
         const result = matchPageWithDocumentsByContext(pageText, docs);
         assert.equal(result.matched, true);
         assert.equal(result.code, 'R-258122');
+    });
+});
+
+describe('matchPageWithDocumentsByStamp', () => {
+    const docs = [
+        'R-263056 DE 10 DE OCTUBRE DE 2025',
+        'R-264273 DE 15 DE OCTUBRE DE 2025',
+        'R-15054 DE 20 DE OCTUBRE DE 2025'
+    ];
+
+    it('asigna el codigo con prefijo R y devuelve el candidato leido', () => {
+        const result = matchPageWithDocumentsByStamp('Oficio 100/2025\nASFI RECEPCION\nR-263056', docs);
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-263056');
+        assert.equal(result.candidate, 'R-263056');
+    });
+
+    it('conserva el candidato aproximado para auditar el match', () => {
+        const result = matchPageWithDocumentsByStamp('Sello ASFI R-263057', docs);
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-263056');
+        assert.equal(result.candidate, 'R-263057');
+    });
+
+    it('acepta digitos sueltos del sello solo si coinciden exactamente', () => {
+        assert.equal(matchPageWithDocumentsByStamp('ASFI\n07 NOV 2025\n15054', docs).code, 'R-15054');
+        assert.equal(matchPageWithDocumentsByStamp('ASFI\n07 NOV 2025\n15014', docs).matched, false);
+    });
+
+    it('ignora numeros sueltos del cuerpo como CI o montos', () => {
+        const result = matchPageWithDocumentsByStamp('Demandado: Persona de Prueba\nC.I. 263056\nMonto 264273', docs);
+        assert.equal(result.matched, false);
+    });
+
+    it('no decide si la pagina cita varios codigos de la lista', () => {
+        const result = matchPageWithDocumentsByStamp('Adjuntos: R-263056 y R-264273', docs);
+        assert.equal(result.matched, false);
     });
 });

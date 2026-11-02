@@ -518,30 +518,72 @@ export function extractPageDateKeys(text) {
 export function extractLooseCodeCandidates(text) {
     if (!text) return [];
 
-    const lines = text
-        .split(/\r?\n/)
-        .map(line => line.trim())
-        .filter(Boolean);
-
-    const focusIndexes = lines
-        .map((line, index) => ({ line, index }))
-        .filter(({ line }) => /ASFI|RECEPCION|RECEPCIÓN|TRAMITE|TRÁMITE|AUTORIDAD DE SUPERVISION/i.test(line))
-        .map(({ index }) => index);
-
-    const focusedLines = [];
-    for (const index of focusIndexes) {
-        for (let offset = -1; offset <= 3; offset++) {
-            const candidateLine = lines[index + offset];
-            if (candidateLine) focusedLines.push(candidateLine);
-        }
-    }
-
-    const focusedCandidates = collectLooseCodeCandidatesFromLines(focusedLines);
+    const lines = splitTextLines(text);
+    const focusedCandidates = collectLooseCodeCandidatesFromLines(collectStampLines(lines));
     if (focusedCandidates.length > 0) {
         return focusedCandidates;
     }
 
     return collectLooseCodeCandidatesFromLines(lines);
+}
+
+function splitTextLines(text) {
+    return text
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean);
+}
+
+/**
+ * Devuelve las líneas alrededor de sellos o recuadros ASFI/RECEPCION.
+ * @param {string[]} lines
+ * @returns {string[]}
+ */
+function collectStampLines(lines) {
+    const focusedLines = [];
+
+    lines.forEach((line, index) => {
+        if (!/ASFI|RECEPCION|RECEPCIÓN|TRAMITE|TRÁMITE|AUTORIDAD DE SUPERVISION/i.test(line)) return;
+        for (let offset = -1; offset <= 3; offset++) {
+            const candidateLine = lines[index + offset];
+            if (candidateLine) focusedLines.push(candidateLine);
+        }
+    });
+
+    return focusedLines;
+}
+
+/**
+ * Busca el código de la página solo con evidencia fuerte en el texto OCR:
+ * códigos con prefijo R (o sus variantes manuscritas) con tolerancia de un
+ * dígito, o secuencias sueltas junto a sellos ASFI/RECEPCION que coincidan
+ * exactamente. Los números sueltos del cuerpo (CI, NIT, montos) no cuentan.
+ * Si el texto apunta a más de un código de la lista, no decide.
+ * @param {string} pageText
+ * @param {string[]} documentList
+ * @returns {{ matched: boolean, documento: string|null, code: string|null, score: number, candidate: string|null }}
+ */
+export function matchPageWithDocumentsByStamp(pageText, documentList) {
+    const noMatch = { matched: false, documento: null, code: null, score: 0, candidate: null };
+    if (!pageText || !documentList || documentList.length === 0) return noMatch;
+
+    const prefixed = new Set(extractPrefixedCodeDigits(pageText));
+    const stampLoose = collectLooseCodeCandidatesFromLines(collectStampLines(splitTextLines(pageText)));
+    const matchedCodes = new Set();
+    let best = noMatch;
+
+    for (const digits of new Set([...prefixed, ...stampLoose])) {
+        const result = matchSingleNumber(digits, documentList);
+        if (!result.matched) continue;
+        if (!prefixed.has(digits) && result.score < 1) continue;
+
+        matchedCodes.add(result.code);
+        if (result.score > best.score) {
+            best = { ...result, candidate: `R-${digits}` };
+        }
+    }
+
+    return matchedCodes.size === 1 ? best : noMatch;
 }
 
 /**
