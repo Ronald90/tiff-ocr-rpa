@@ -155,6 +155,11 @@ function extractPrefixedCodeDigits(text = '') {
         const previous = source[index - 1] || '';
         if (/[A-Z0-9]/i.test(previous)) continue;
 
+        // "pisos 4" no es un código: sin esta comprobación P/I/S/O/S/4
+        // se convierte en R-15054 por las equivalencias visuales.
+        const next = source[index + 1] || '';
+        if (!isCodeSeparator(next) && !/\d/.test(next)) continue;
+
         const digits = scanDigitsAfterPrefix(source, index + 1);
         if (digits) codes.push(digits);
     }
@@ -189,7 +194,9 @@ function buildDateKey(dayToken, monthToken, yearToken) {
 }
 
 function normalizeLooseCodeCandidate(raw = '') {
-    return normalizeDigitLikeChars(String(raw).replace(/^[RPKBH]\s*[-–—./]?\s*/i, ''));
+    const source = String(raw);
+    if (/^[RPKBH][OQSoqsIil|]/i.test(source)) return '';
+    return normalizeDigitLikeChars(source.replace(/^[RPKBH]\s*[-–—./]?\s*/i, ''));
 }
 
 function collectLooseCodeCandidatesFromLines(lines) {
@@ -198,6 +205,8 @@ function collectLooseCodeCandidatesFromLines(lines) {
     const regex = /(?:[0-9Iil|OQoqSs]\s*[-–—./\\]?\s*){5,8}/g;
 
     function addCandidate(raw) {
+        // Evita formar un código a partir de palabras como "isos 4".
+        if ((raw.match(/\d/g) || []).length < 3) return;
         const normalized = normalizeLooseCodeCandidate(raw);
         if (normalized.length < CODE_MIN_DIGITS || normalized.length > CODE_MAX_DIGITS) return;
         if (seen.has(normalized)) return;

@@ -37,6 +37,8 @@ Coloca archivos `.tif`/`.tiff` en la carpeta `input/`. El sistema los procesa au
 - `output/<nombre>_datos.json` — Datos estructurados extraídos
 
 Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
+En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
+TIFF termina con errores, su TXT y JSON se guardan junto al original en `error/`.
 
 ## Estructura del proyecto
 

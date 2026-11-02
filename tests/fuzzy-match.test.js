@@ -119,6 +119,14 @@ describe('extractRCodes', () => {
         assert.deepEqual(codes, ['R-251991']);
     });
 
+    it('no convierte la dirección "pisos 4" en R-15054', () => {
+        assert.deepEqual(extractRCodes('Torre A, pisos 4, 5, 6'), []);
+        assert.deepEqual(extractLooseCodeCandidates('Torre A, pisos 4, 5, 6'), []);
+        assert.deepEqual(extractLooseCodeCandidates('Torre A, pisos 4 5'), []);
+        assert.equal(matchSingleNumber('pisos 4', ['R-15054']).matched, false);
+        assert.equal(matchPageWithDocumentsByContext('pisos 4', ['R-15054']).matched, false);
+    });
+
     it('no agrega letras de palabras posteriores como digitos', () => {
         const codes = extractRCodes('Recibido R-251991 SEÑOR JUEZ');
         assert.deepEqual(codes, ['R-251991']);

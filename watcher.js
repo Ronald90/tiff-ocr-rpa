@@ -32,18 +32,18 @@ function loadHistoryMap() {
         if (fs.existsSync(HISTORY_FILE)) {
             const content = fs.readFileSync(HISTORY_FILE, 'utf-8');
             const lines = content.split('\n');
-            let loaded = 0;
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
                     const entry = JSON.parse(line);
-                    if (entry.key && entry.data) {
+                    if (entry.key && entry.invalidated === true) {
+                        historyMap.delete(entry.key);
+                    } else if (entry.key && entry.data) {
                         historyMap.set(entry.key, entry.data);
-                        loaded++;
                     }
                 } catch { /* ignore corrupted lines */ }
             }
-            logger.info(`[HIST] Historial cargado: ${loaded} archivos procesados previos.`);
+            logger.info(`[HIST] Historial cargado: ${historyMap.size} archivos procesados previos.`);
         }
     } catch (err) {
         logger.error(`Error cargando historial: ${err.message}`);
@@ -196,37 +196,70 @@ async function processPendingFiles() {
                 const idx = nextIndex;
                 nextIndex++;
                 const { filename, filePath, fileKey } = pending[idx];
+                let stagingDir = null;
+                const publishedPaths = [];
 
                 logger.info(`  [WORKER ${workerId}]: procesando ${filename}`);
 
                 try {
-                    const result = await processFile(filePath, config.outputDir);
+                    // No publicar resultados hasta conocer el estado final del TIFF.
+                    stagingDir = fs.mkdtempSync(path.join(config.errorDir, '.processing-'));
+                    const result = await processFile(filePath, stagingDir);
                     const hasCriticalErrors = result.extractedData?.tiene_errores;
+                    const accepted = result.success > 0 && !hasCriticalErrors;
+                    const resultsDir = accepted ? config.outputDir : config.errorDir;
 
-                    if (result.success > 0 && !hasCriticalErrors) {
+                    for (const resultPath of [result.outputPath, result.jsonPath]) {
+                        publishedPaths.push(moveFile(resultPath, resultsDir));
+                    }
+
+                    if (accepted) {
+                        moveFile(filePath, config.processedDir);
                         const historyData = {
                             date: new Date().toISOString(),
                             pages: result.numPages,
                             success: result.success,
                             errors: result.errors,
                             elapsed: result.elapsed,
-                            output: path.basename(result.outputPath)
+                            output: path.basename(publishedPaths[0])
                         };
 
-                        // Guardar en historial optimizado
-                        addToHistory(fileKey, historyData);
+                        try {
+                            addToHistory(fileKey, historyData);
+                        } catch (historyErr) {
+                            logger.error(`[HIST] No se pudo registrar ${filename}: ${historyErr.message}`);
+                        }
 
-                        moveFile(filePath, config.processedDir);
                         logger.success(`[OK] ${filename} -> processed/`);
                     } else if (result.success > 0 && hasCriticalErrors) {
-                        logger.error(`[LEGAL] ${filename} terminado con errores criticos. Revisar JSON/TXT; se mueve a error/.`);
                         moveFile(filePath, config.errorDir);
+                        logger.error(`[LEGAL] ${filename} terminado con errores criticos. TIFF y JSON/TXT en error/.`);
                     } else {
-                        logger.error(`Todas las páginas fallaron para ${filename}`);
                         moveFile(filePath, config.errorDir);
+                        logger.error(`Todas las páginas fallaron para ${filename}. TIFF y JSON/TXT en error/.`);
                     }
 
                 } catch (err) {
+                    // Si falló la publicación, retirar de output/ cualquier
+                    // resultado parcial y conservarlo junto al TIFF en error/.
+                    for (const publishedPath of publishedPaths) {
+                        if (!publishedPath.startsWith(config.outputDir + path.sep) || !fs.existsSync(publishedPath)) continue;
+                        try {
+                            moveFile(publishedPath, config.errorDir);
+                        } catch (moveErr) {
+                            logger.error(`[OUTPUT] No se pudo retirar ${publishedPath}: ${moveErr.message}`);
+                        }
+                    }
+                    if (stagingDir) {
+                        for (const stagedName of fs.readdirSync(stagingDir)) {
+                            try {
+                                moveFile(path.join(stagingDir, stagedName), config.errorDir);
+                            } catch (moveErr) {
+                                logger.error(`[OUTPUT] No se pudo conservar ${stagedName} en error/: ${moveErr.message}`);
+                            }
+                        }
+                    }
+
                     if (isInsufficientQuotaError(err)) {
                         stopBatch = true;
                         openAIQuotaPauseUntil = Date.now() + OPENAI_QUOTA_PAUSE_MS;
@@ -242,6 +275,14 @@ async function processPendingFiles() {
                     try {
                         moveFile(filePath, config.errorDir);
                     } catch { /* ignore */ }
+                } finally {
+                    if (stagingDir) {
+                        try {
+                            fs.rmdirSync(stagingDir);
+                        } catch (cleanupErr) {
+                            logger.warn(`[OUTPUT] Carpeta temporal pendiente ${stagingDir}: ${cleanupErr.message}`);
+                        }
+                    }
                 }
             }
         }
