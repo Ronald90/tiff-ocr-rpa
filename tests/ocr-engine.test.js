@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import openai from '../openai-client.js';
 import config from '../config.js';
 import { processFile } from '../ocr-engine.js';
@@ -106,16 +107,48 @@ function mockOpenAI(adjuntos, pages) {
     return calls;
 }
 
-async function run() {
+async function run(tiffPath = fixture) {
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-ocr-engine-'));
     try {
-        return await processFile(fixture, outputDir);
+        return await processFile(tiffPath, outputDir);
     } finally {
         fs.rmSync(outputDir, { recursive: true, force: true });
     }
 }
 
 describe('processFile', () => {
+    it('acepta SIREFO de una pagina con adjunto sin R y conserva la referencia; otros faltantes siguen siendo errores', async () => {
+        const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-ocr-sirefo-'));
+        const onePageTiff = path.join(fixtureDir, 'one-page.tiff');
+        const externalAdjunto = 'el detalle de las instrucciones remitidas por la Aduana Nacional (AN)';
+        const sirefoCover = 'Sistema de Transmision de Ordenes de Retencion, Suspension de Retencion y Remision de Fondos (SIREFO).';
+
+        try {
+            await sharp(fixture, { page: 0 }).tiff().toFile(onePageTiff);
+
+            mockOpenAI([externalAdjunto], { 1: { text: sirefoCover } });
+            const sirefo = (await run(onePageTiff)).extractedData;
+            assert.equal(sirefo.es_sirefo, true);
+            assert.equal(sirefo.tiene_errores, false);
+            assert.deepEqual(sirefo.documentos_adjuntos, [externalAdjunto]);
+            assert.equal(sirefo.codigos_no_encontrados, undefined);
+            assert.match(sirefo.advertencias.join(' '), /no incluido/);
+
+            mockOpenAI([externalAdjunto], { 1: { text: COVER } });
+            const ordinary = (await run(onePageTiff)).extractedData;
+            assert.equal(ordinary.es_sirefo, false);
+            assert.equal(ordinary.tiene_errores, true);
+            assert.deepEqual(ordinary.codigos_no_encontrados, ['SIN_CODIGO']);
+
+            mockOpenAI(['R-12345'], { 1: { text: sirefoCover } });
+            const missingCode = (await run(onePageTiff)).extractedData;
+            assert.equal(missingCode.tiene_errores, true);
+            assert.deepEqual(missingCode.codigos_no_encontrados, ['R-12345']);
+        } finally {
+            fs.rmSync(fixtureDir, { recursive: true, force: true });
+        }
+    });
+
     it('ubica por texto, agrupa continuaciones y deja de leer al cerrar el ultimo adjunto', async () => {
         const calls = mockOpenAI(['R-12345', 'R-54321'], {
             1: { text: COVER },

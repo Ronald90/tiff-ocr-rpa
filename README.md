@@ -40,6 +40,11 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
 TIFF termina con errores, solo se conserva el original en `error/`.
 
+En un TIFF SIREFO de una sola página, una referencia a instrucciones adjuntas
+sin código R se conserva en `documentos_adjuntos` y se avisa en `advertencias`;
+no se marca como código faltante porque ese detalle no está dentro del TIFF.
+Un código R mencionado y no localizado sigue siendo un error.
+
 ## Estructura del proyecto
 
 ```

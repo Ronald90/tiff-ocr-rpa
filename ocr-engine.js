@@ -1154,8 +1154,19 @@ export async function processFile(tiffPath, outputDir) {
     // FASE 4: Reporte de codigos no encontrados
     // ===================================================================
 
+    // Una circular SIREFO de una sola pagina puede mencionar instrucciones
+    // remitidas por otro sistema sin contenerlas en este TIFF. Conservar esa
+    // descripcion en el JSON, pero no exigir un codigo R que nunca se indico.
+    const sirefoExternalAdjuntos = extractedData.es_sirefo && numPages === 1
+        ? adjuntos.filter(adj => !extractDocCode(adj))
+        : [];
+    if (sirefoExternalAdjuntos.length > 0) {
+        logger.info(`[SIREFO] ${sirefoExternalAdjuntos.length} adjunto(s) descrito(s) sin codigo R en un TIFF de una pagina; se conserva la referencia sin buscar otra pagina.`);
+    }
+
     const notFound = adjuntos.filter(adj => {
         const code = extractDocCode(adj);
+        if (sirefoExternalAdjuntos.includes(adj)) return false;
         return !matchedCodes.has(code);
     });
 
@@ -1251,6 +1262,9 @@ export async function processFile(tiffPath, outputDir) {
     }
     if (adjuntosConMatchAproximado.length > 0) {
         advertencias.push(`${adjuntosConMatchAproximado.length} match(es) aproximado(s) requieren revision manual: ${adjuntosConMatchAproximado.map(a => `${a.id_encontrado}->${a.id_buscado}`).join(', ')}`);
+    }
+    if (sirefoExternalAdjuntos.length > 0) {
+        advertencias.push(`${sirefoExternalAdjuntos.length} adjunto(s) SIREFO mencionado(s) sin codigo R y no incluido(s) en este TIFF de una pagina`);
     }
     if (notFound.length > 0) {
         advertencias.push(`${notFound.length} codigo(s) no encontrados en el documento`);
