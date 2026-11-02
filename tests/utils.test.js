@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { sleep, renderPrompt, safeJsonParse, formatTime } from '../utils.js';
+import { sleep, renderPrompt, safeJsonParse, formatTime, isFileStable } from '../utils.js';
 
 // ── renderPrompt ──────────────────────────────────────────────────────
 
@@ -113,5 +113,25 @@ describe('sleep', () => {
     it('devuelve una promesa', () => {
         const result = sleep(1);
         assert.ok(result instanceof Promise);
+    });
+});
+
+describe('isFileStable', () => {
+    it('espera una segunda revision sin cambios antes de procesar', () => {
+        const seen = new Map();
+        const stat = { size: 2048, mtimeMs: 1000 };
+
+        assert.equal(isFileStable(seen, '/in/a.tif', stat), false);
+        assert.equal(isFileStable(seen, '/in/a.tif', stat), true);
+    });
+
+    it('no procesa un archivo que sigue creciendo o esta vacio', () => {
+        const seen = new Map();
+
+        isFileStable(seen, '/in/a.tif', { size: 1024, mtimeMs: 1000 });
+        assert.equal(isFileStable(seen, '/in/a.tif', { size: 2048, mtimeMs: 1500 }), false);
+
+        isFileStable(seen, '/in/b.tif', { size: 0, mtimeMs: 1000 });
+        assert.equal(isFileStable(seen, '/in/b.tif', { size: 0, mtimeMs: 1000 }), false);
     });
 });

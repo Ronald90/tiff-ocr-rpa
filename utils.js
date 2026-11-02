@@ -74,3 +74,19 @@ export function formatTime(seconds) {
 export function modelLabel() {
     return `${config.model} (OCR), ${config.idModel} (ID), ${config.textModel} (extraccion)`;
 }
+
+/**
+ * Indica si un archivo terminó de escribirse: tiene contenido y su tamaño y
+ * fecha de modificación no cambiaron desde la revisión anterior. Registra la
+ * firma actual en `seen` para la próxima revisión.
+ * @param {Map<string, string>} seen - Firma de la última revisión por ruta
+ * @param {string} filePath - Ruta del archivo
+ * @param {{ size: number, mtimeMs: number }} stat - Resultado de fs.statSync
+ * @returns {boolean}
+ */
+export function isFileStable(seen, filePath, stat) {
+    const signature = `${stat.size}:${stat.mtimeMs}`;
+    const stable = stat.size > 0 && seen.get(filePath) === signature;
+    seen.set(filePath, signature);
+    return stable;
+}

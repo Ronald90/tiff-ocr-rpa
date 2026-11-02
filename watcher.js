@@ -5,6 +5,7 @@ import config from './config.js';
 import logger from './logger.js';
 import { processFile } from './ocr-engine.js';
 import { isInsufficientQuotaError } from './openai-errors.js';
+import { isFileStable } from './utils.js';
 
 // ── Estado del watcher ────────────────────────────────────────────────
 
@@ -17,6 +18,8 @@ const HASH_SAMPLE_SIZE = 16384;
 const OPENAI_QUOTA_PAUSE_MS = 5 * 60 * 1000;
 
 const historyMap = new Map();
+/** Tamaño y fecha de cada TIFF de input/ en la revisión anterior */
+const fileSignatures = new Map();
 let historyStream = null;
 let processing = false;
 let openAIQuotaPauseUntil = 0;
@@ -126,6 +129,10 @@ async function processPendingFiles() {
 
     try {
         const allFiles = fs.readdirSync(config.inputDir).filter(isTiff);
+        const present = new Set(allFiles.map(filename => path.join(config.inputDir, filename)));
+        for (const filePath of fileSignatures.keys()) {
+            if (!present.has(filePath)) fileSignatures.delete(filePath);
+        }
         if (allFiles.length === 0) return;
 
         // Filtrar archivos YA procesados usando el Map en memoria
@@ -139,6 +146,10 @@ async function processPendingFiles() {
 
             try {
                 const stat = fs.statSync(filePath);
+
+                // Un TIFF que todavia se esta copiando cambia de tamano o fecha
+                // entre revisiones: se procesa cuando se mantiene igual.
+                if (!isFileStable(fileSignatures, filePath, stat)) continue;
 
                 // Hash SHA-256 parcial (16 KB) para identificación más robusta
                 const buf = Buffer.alloc(HASH_SAMPLE_SIZE);
