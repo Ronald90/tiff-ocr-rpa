@@ -13,6 +13,8 @@ import { processFile } from '../ocr-engine.js';
 const fixture = path.resolve('tests/fixtures/ten-pages.tiff');
 const longFixture = path.resolve('tests/fixtures/fourteen-pages.tiff');
 const inkFixture = path.resolve('tests/fixtures/three-pages-with-ink.tiff');
+// La pagina 3 esta en blanco salvo motas aisladas, como un reverso escaneado.
+const speckledFixture = path.resolve('tests/fixtures/three-pages-speckled.tiff');
 const readPrompt = name => fs.readFileSync(path.resolve('prompts', name), 'utf-8');
 const SYSTEM = {
     ocr: readPrompt('ocr_vision_system.txt'),
@@ -239,6 +241,55 @@ describe('processFile', () => {
         assert.equal(result.extractedData.estado_procesamiento, 'error');
         assert.equal(result.errors, 1);
         assert.equal(calls.id.includes(3), false);
+        assert.equal(calls.ocr.filter(call => call.page === 3).length, 2);
+    });
+
+    it('repite una vez un OCR vacio en una pagina con tinta', async () => {
+        const calls = mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { ocr: attempt => completion(attempt === 1 ? '' : CONTINUACION) }
+        });
+
+        const result = await run(inkFixture);
+
+        assert.equal(result.errors, 0);
+        assert.equal(calls.ocr.filter(call => call.page === 3).length, 2);
+        assert.equal(result.extractedData.ubicacion_adjuntos[0].paginas_continuacion, 1);
+    });
+
+    it('acepta el TIFF y avisa cuando una continuacion escribe distinto al juez', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: CONTINUACION }
+        });
+        const mocked = openai.chat.completions.create;
+        openai.chat.completions.create = (request, options) =>
+            request.response_format?.json_schema?.name === 'adjunto_continuacion'
+                ? completion(JSON.stringify({ demandados: [], juez: 'Abg. Juan Perez Mamani', juzgado: '', tipo_documento_respaldo: '', nro_documento_respaldo: '', monto_retenido: '', moneda: '' }))
+                : mocked(request, options);
+
+        const data = (await run(inkFixture)).extractedData;
+
+        assert.equal(data.tiene_errores, false);
+        assert.equal(data.estado_procesamiento, 'completo');
+        assert.equal(data.ubicacion_adjuntos[0].juez, 'Juan Perez');
+        assert.match(data.advertencias.join(' '), /juez o juzgado escrito distinto entre paginas: R-12345/);
+    });
+
+    it('acepta como en blanco una pagina con motas del escaner y OCR vacio', async () => {
+        const calls = mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: '' }
+        });
+
+        const result = await run(speckledFixture);
+
+        assert.equal(result.errors, 0);
+        assert.equal(result.extractedData.tiene_errores, false);
+        assert.equal(calls.ocr.filter(call => call.page === 3).length, 1);
     });
 
     it('detiene el adjunto ante un oficio distinto sin codigo R y exige revision', async () => {

@@ -497,16 +497,14 @@ function normalizeAdjuntoResult(data) {
 
 /**
  * Completa solo desde la pagina principal los campos que el modelo dejo vacios.
- * Un oficio o resolucion adjunta no puede aportar datos del documento R.
+ * Un oficio o resolucion adjunta no puede aportar datos del documento R. El
+ * juez se completa aparte, despues de leer las continuaciones.
  * @param {object} result - Resultado normalizado (se modifica)
  * @param {string} ocrText - Texto transcrito de la pagina principal
  */
 function applyTextFallbacks(result, ocrText) {
     if (!result.tipo_proceso) {
         result.tipo_proceso = extractExplicitTipoProcesoFallback(ocrText);
-    }
-    if (!result.juez) {
-        result.juez = extractJuezFallback(ocrText);
     }
     if (!result.moneda && result.monto_retenido) {
         result.moneda = detectDemandadoMontoCurrency(ocrText);
@@ -531,6 +529,22 @@ function sameFieldValue(a, b) {
     return canonical(a) === canonical(b);
 }
 
+/** Lleva un monto a "entero.decimales" ("Bs. 1.000,00", "1000" y "1.000.oo" coinciden). */
+function canonicalAmount(value) {
+    const text = normalizeDemandadoMonto(value).replace(/[oO]{2}$/, '00').replace(/\s/g, '');
+    if (!/^\d[\d.,]*$/.test(text)) return null;
+    const decimals = text.match(/[.,](\d{1,2})$/);
+    const integer = (decimals ? text.slice(0, decimals.index) : text).replace(/[.,]/g, '');
+    return `${Number(integer)}.${(decimals?.[1] || '0').padEnd(2, '0')}`;
+}
+
+/** Compara montos por su valor; los que no son numéricos, como texto. */
+function sameAmount(a, b) {
+    const left = canonicalAmount(a);
+    const right = canonicalAmount(b);
+    return left !== null && right !== null ? left === right : sameFieldValue(a, b);
+}
+
 /** Une menciones de la misma persona sin perder datos ni ocultar diferencias reales. */
 function mergeDemandados(demandados) {
     const rows = [];
@@ -538,6 +552,11 @@ function mergeDemandados(demandados) {
     for (const candidate of demandados) {
         const candidateName = candidate.razon_social || candidate.nombre;
         const existing = rows.find(row => {
+            // La misma persona con otra resolucion es otra fila de la orden
+            // (por ejemplo, varias resoluciones tributarias del mismo NIT).
+            if (row.resolucion && candidate.resolucion && !sameFieldValue(row.resolucion, candidate.resolucion)) {
+                return false;
+            }
             const rowName = row.razon_social || row.nombre;
             const bothIds = row.nro_documento && candidate.nro_documento;
             if (bothIds) {
@@ -551,8 +570,9 @@ function mergeDemandados(demandados) {
             continue;
         }
         for (const key of Object.keys(candidate)) {
+            const same = key === 'monto' ? sameAmount : sameFieldValue;
             if (!existing[key]) existing[key] = candidate[key];
-            else if (candidate[key] && !sameFieldValue(existing[key], candidate[key])) {
+            else if (candidate[key] && !same(existing[key], candidate[key])) {
                 conflictingFields.add(`demandados.${key}`);
             }
         }
@@ -710,6 +730,7 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
 
     const merged = { ...ADJUNTO_EMPTY, demandados: [] };
     const conflictingFields = new Set();
+    const differentValues = [];
 
     for (let index = 0; index < chunks.length; index++) {
         if (!chunks[index].trim()) continue;
@@ -729,8 +750,11 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
                 if (!result[key]) continue;
                 if (!merged[key]) merged[key] = result[key];
                 else if (!sameFieldValue(merged[key], result[key])) {
+                    // Encabezado, sello y firma suelen escribir distinto al
+                    // mismo juez o juzgado ("Abg. ...", "3º" / "TERCERO"): se
+                    // conserva el dato previo y se avisa sin bloquear el TIFF.
                     logger.warn(`[ADJUNTO-EXTRACT] Valor distinto de ${key} en fragmento ${index + 1}; se conserva el dato previo`);
-                    conflictingFields.add(key);
+                    differentValues.push(`${key} "${result[key]}" en fragmento ${index + 1}; se conserva "${merged[key]}"`);
                 }
             }
             for (const [valueKey, detailKey] of [
@@ -740,8 +764,9 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
                 // El numero o la moneda aislados no pueden vincularse con el
                 // tipo o el monto de otra pagina.
                 if (!result[valueKey]) continue;
+                const same = valueKey === 'monto_retenido' ? sameAmount : sameFieldValue;
                 if (!merged[valueKey]) merged[valueKey] = result[valueKey];
-                else if (!sameFieldValue(merged[valueKey], result[valueKey])) {
+                else if (!same(merged[valueKey], result[valueKey])) {
                     conflictingFields.add(valueKey);
                     continue;
                 }
@@ -755,12 +780,21 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
         }
     }
 
+    // El bloque de firma suele estar en una continuacion: el regex sobre la
+    // pagina principal solo completa el juez si ningun fragmento lo leyo.
+    const primaryJudge = extractJuezFallback(chunks[0]);
+    if (!merged.juez) merged.juez = primaryJudge;
+    else if (primaryJudge && !sameFieldValue(primaryJudge, merged.juez)) {
+        differentValues.push(`juez "${primaryJudge}" segun la firma de la pagina principal; se conserva "${merged.juez}"`);
+    }
+
     const mergedDemandados = mergeDemandados(merged.demandados);
     merged.demandados = mergedDemandados.rows;
     for (const key of mergedDemandados.conflictingFields) conflictingFields.add(key);
     if (conflictingFields.size > 0) {
         merged._error = `Campos del mismo proceso contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
     }
+    if (differentValues.length > 0) merged._advertencia_valores_distintos = differentValues;
     if (chunks.length > 1) merged._fragmentos_extraccion = chunks.length;
     return merged;
 }

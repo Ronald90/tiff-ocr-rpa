@@ -42,6 +42,12 @@ const HANDWRITING_CONTRAST = 1.5;
 /** Longitud máxima de texto para considerar como rechazo del modelo */
 const REFUSAL_MAX_LENGTH = 200;
 
+/** Ventana del filtro de mediana que borra motas del escáner (3 px deja motas) */
+const BLANK_PAGE_MEDIAN_PX = 5;
+
+/** Fracción de tinta tolerada en una página en blanco (polvo: 1 de 100.000 px) */
+const BLANK_PAGE_MAX_INK_RATIO = 0.00001;
+
 // ── Cargar prompts desde archivos externos ────────────────────────────
 
 const PROMPTS = {
@@ -81,10 +87,25 @@ async function extractPageAsPng(tiffPath, pageIndex, maxWidth = config.maxImageW
     return image.png({ compressionLevel: 6 }).toBuffer();
 }
 
-/** Comprueba la página original, antes de cualquier reducción para Vision. */
+/**
+ * Comprueba la página original, antes de cualquier reducción para Vision. Un
+ * escaneo real nunca es uniforme: la mediana borra las motas del escáner y
+ * conserva texto, sellos y firmas (la página real con menos tinta medida
+ * conserva unos 26.000 px oscuros). stats() de sharp mide la imagen de entrada
+ * sin aplicar la mediana, por eso se cuentan los píxeles del resultado.
+ */
 async function isVisuallyBlankPage(tiffPath, pageIndex) {
-    const stats = await sharp(tiffPath, { page: pageIndex }).stats();
-    return stats.channels.every(channel => channel.min === channel.max);
+    const pixels = await sharp(tiffPath, { page: pageIndex })
+        .removeAlpha()
+        .toColourspace('b-w')
+        .median(BLANK_PAGE_MEDIAN_PX)
+        .raw()
+        .toBuffer();
+    let ink = 0;
+    for (const value of pixels) {
+        if (value < 128) ink++;
+    }
+    return ink / pixels.length <= BLANK_PAGE_MAX_INK_RATIO;
 }
 
 // ── Mejora de imagen para texto manuscrito ─────────────────────────────
@@ -632,13 +653,17 @@ async function readPage(tiffPath, pageIndex, adjuntos) {
     try {
         const pngBuffer = await extractPageAsPng(tiffPath, pageIndex);
         const sizeKB = (pngBuffer.length / 1024).toFixed(1);
-        const text = (await transcribeWithVision(pngBuffer, pageNum)) || '';
+        let text = (await transcribeWithVision(pngBuffer, pageNum)) || '';
 
         if (!text.trim()) {
             if (await isVisuallyBlankPage(tiffPath, pageIndex)) {
                 return { pageIndex, pageNum, sizeKB, text: '', code: null, codeSource: null, blank: true, error: null };
             }
-            throw new Error(`OCR vacio en pagina ${pageNum} con contenido visible; requiere revision`);
+            // Un texto vacío con tinta visible puede ser un fallo puntual del
+            // modelo; la caché no guarda respuestas vacías, así que se repite.
+            logger.warn(`[OCR] Pagina ${pageNum}: texto vacio con contenido visible; se repite la transcripcion`);
+            text = (await transcribeWithVision(pngBuffer, pageNum)) || '';
+            if (!text.trim()) throw new Error(`OCR vacio en pagina ${pageNum} con contenido visible; requiere revision`);
         }
 
         const stampMatch = matchPageWithDocumentsByStamp(text, adjuntos);
@@ -1321,6 +1346,7 @@ async function processFileImpl(tiffPath, outputDir) {
     const adjuntosConError = ubicacion_adjuntos.filter(a => a._error);
     const adjuntosRecuperadosPorAuditoria = ubicacion_adjuntos.filter(a => a.recuperado_por_auditoria);
     const adjuntosConMatchAproximado = ubicacion_adjuntos.filter(a => a._advertencia_match_aproximado);
+    const adjuntosConValoresDistintos = ubicacion_adjuntos.filter(a => a._advertencia_valores_distintos);
     const advertencias = [];
 
     if (adjuntosConError.length > 0) {
@@ -1340,6 +1366,11 @@ async function processFileImpl(tiffPath, outputDir) {
     }
     if (adjuntosConMatchAproximado.length > 0) {
         advertencias.push(`${adjuntosConMatchAproximado.length} match(es) aproximado(s) requieren revision manual: ${adjuntosConMatchAproximado.map(a => `${a.id_encontrado}->${a.id_buscado}`).join(', ')}`);
+    }
+    // Solo informativo: juez y juzgado escritos distinto no cambian a quien ni
+    // cuanto se retiene, por eso no bloquean el TIFF.
+    if (adjuntosConValoresDistintos.length > 0) {
+        advertencias.push(`${adjuntosConValoresDistintos.length} adjunto(s) con juez o juzgado escrito distinto entre paginas: ${adjuntosConValoresDistintos.map(a => `${a.id_buscado} (${a._advertencia_valores_distintos.join('; ')})`).join(', ')}`);
     }
     if (sirefoExternalAdjuntos.length > 0) {
         advertencias.push(`${sirefoExternalAdjuntos.length} adjunto(s) SIREFO mencionado(s) sin codigo R y no incluido(s) en este TIFF de una pagina`);
@@ -1386,7 +1417,7 @@ async function processFileImpl(tiffPath, outputDir) {
         paginas_documento_no_identificado: paginasDocumentoNoIdentificado.length > 0 ? paginasDocumentoNoIdentificado : undefined,
         _auditoria: {
             modelo: modelLabel(),
-            version_sistema: '2.3.3',
+            version_sistema: '2.3.4',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,

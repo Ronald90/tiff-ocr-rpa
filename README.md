@@ -58,9 +58,14 @@ NUREJ/CUD y montos retenidos cuando pertenecen al mismo proceso, pero no
 reemplazan el cite, la fecha ni el demandante del principal. Los campos vacíos
 se dejan vacíos cuando solo figuran en un documento de otro proceso.
 Si falla la extracción de alguna parte, el TIFF se envía a `error/` y no se
-publican TXT ni JSON.
-Una respuesta OCR vacía solo se acepta si la imagen de esa página es uniforme;
-si no es uniforme, el TIFF va a `error/`. Un encabezado de CITE, oficio o carta
+publican TXT ni JSON. Un monto o un demandado que difieren de verdad entre
+páginas también envían el TIFF a `error/`; los montos se comparan por su valor
+(`1.000,00`, `1000` y `Bs. 1.000.-` son iguales) y la misma persona con otra
+resolución es otra fila. Un juez o juzgado escrito de otra forma en otra página
+no bloquea el TIFF: se conserva el primero y se informa en `advertencias`.
+Una respuesta OCR vacía se acepta solo si la página está en blanco tras quitar
+las motas del escáner con un filtro de mediana de 5 px; si tiene tinta, se
+repite la transcripción una vez y, si sigue vacía, el TIFF va a `error/`. Un encabezado de CITE, oficio o carta
 circular con identificador distinto dentro de una supuesta continuación se
 marca para revisión. Un título aislado de oficio o carta circular al inicio de
 la página, sin identificador legible, también requiere revisión. Las menciones

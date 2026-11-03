@@ -1,6 +1,6 @@
 {
   "name": "tiff-vision-rpa",
-  "version": "2.3.3",
+  "version": "2.3.4",
   "description": "RPA para procesar archivos TIFF multipágina con Vision usando el modelo configurado en .env",
   "main": "main.js",
   "type": "module",
