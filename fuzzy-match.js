@@ -312,8 +312,8 @@ export function extractRCodes(text) {
 
 /**
  * Detecta si la lista de documentos contiene códigos muy similares entre sí
- * (distancia Levenshtein ≤ 2). Cuando esto ocurre, el matching debe ser más estricto
- * para evitar asignar datos judiciales a la persona equivocada.
+ * (distancia Levenshtein ≤ 2). Se informa como dato de auditoría; la
+ * ambigüedad de cada candidato se resuelve en matchSingleNumber.
  * @param {string[]} documentList - Lista de documentos adjuntos
  * @returns {boolean}
  */
@@ -348,11 +348,12 @@ export function matchSingleNumber(identifiedNumber, documentList, options = {}) 
         return { matched: false, documento: null, code: null, score: 0 };
     }
 
-    // Detectar si hay códigos similares en la lista para endurecer el matching
+    // Los códigos parecidos en otra parte de la lista no invalidan una
+    // aproximación única de este candidato. Los empates se rechazan abajo.
     const hasSimilarCodes = detectSimilarCodesInList(documentList);
     const maxDigitDistance = Number.isInteger(options.maxDigitDistance)
         ? options.maxDigitDistance
-        : (hasSimilarCodes ? 0 : MAX_CODE_DIGIT_DISTANCE);
+        : MAX_CODE_DIGIT_DISTANCE;
     const maxLengthDelta = Number.isInteger(options.maxLengthDelta)
         ? options.maxLengthDelta
         : 0;

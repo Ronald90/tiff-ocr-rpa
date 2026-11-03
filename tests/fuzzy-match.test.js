@@ -218,6 +218,15 @@ describe('matchSingleNumber', () => {
         assert.equal(result.code, 'R-241594');
     });
 
+    it('permite un digito distinto si el candidato es unico aunque otros codigos se parezcan', () => {
+        const docs = ['R-241770', 'R-241594', 'R-241595'];
+        const result = matchSingleNumber('R-291770', docs);
+        assert.equal(result.matched, true);
+        assert.equal(result.code, 'R-241770');
+        assert.equal(result.score, 0.8333);
+        assert.equal(result.similarCodesDetected, true);
+    });
+
     it('no match con 2 dígitos de diferencia', () => {
         const result = matchSingleNumber('R-241000', documentList);
         assert.equal(result.matched, false);

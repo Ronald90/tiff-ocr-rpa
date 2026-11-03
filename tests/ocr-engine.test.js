@@ -103,7 +103,7 @@ function mockOpenAI(adjuntos, pages) {
             await delay(10);
             const codeInText = spec.text?.match(/R-\d{5,7}/)?.[0];
             const readNumber = calls.id.filter(item => item === page).length;
-            return completion(readNumber > 2
+            return completion(readNumber > 3
                 ? (spec.cropped ?? spec.verify ?? spec.id ?? codeInText ?? 'NO_ENCONTRADO')
                 : readNumber > 1
                     ? (spec.verify ?? spec.id ?? codeInText ?? 'NO_ENCONTRADO')
@@ -462,14 +462,29 @@ describe('processFile', () => {
     it('relee la franja superior cuando dos lecturas de pagina completa discrepan', async () => {
         const calls = mockOpenAI(['R-12345'], {
             1: { text: COVER },
-            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}`, id: 'R-12346', cropped: 'R-12345' }
+            2: { text: OFICIO, id: 'R-12346', cropped: 'R-12345' }
         });
 
         const data = (await run()).extractedData;
         assert.equal(data.estado_procesamiento, 'completo');
         assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, true);
+        assert.equal(data.ubicacion_adjuntos[0].id_encontrado, 'R-12346');
+        assert.equal(data.ubicacion_adjuntos[0].confianza, 0.8);
+        assert.equal(data.ubicacion_adjuntos[0]._advertencia_match_aproximado, undefined);
         assert.equal(data.ubicacion_adjuntos[0].codigo_lectura_recorte, 'R-12345');
-        assert.equal(calls.id.filter(page => page === 2).length, 3);
+        assert.equal(calls.id.filter(page => page === 2).length, 4);
+    });
+
+    it('mantiene la revision cuando una aproximacion no obtiene confirmacion visual', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: OFICIO, id: 'R-12346' }
+        });
+
+        const data = (await run()).extractedData;
+        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
+        assert.match(data.ubicacion_adjuntos[0]._advertencia_match_aproximado, /Revisar manualmente/);
     });
 
     it('marca errores sin reintentar una solicitud invalida y reintenta un OCR truncado con mas tokens', async () => {

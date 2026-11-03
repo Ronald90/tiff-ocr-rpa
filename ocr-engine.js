@@ -725,7 +725,7 @@ async function locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos) {
         page.match = match;
         matchedCodes.add(match.code);
         pending = pending.filter(doc => extractDocCode(doc) !== match.code);
-        logger.info(`  [MATCH] Pagina ${page.pageNum} <-> ${match.code} (confianza: ${(match.score * 100).toFixed(0)}%). Faltan ${pending.length} codigos.`);
+        logger.info(`  [MATCH] Pagina ${page.pageNum} <-> ${match.code} (similitud con lista: ${(match.score * 100).toFixed(0)}%; pendiente verificacion visual). Faltan ${pending.length} codigos.`);
     }
 
     logger.info(`[FASE 2] Transcribiendo e identificando paginas ${coverPageCount + 1}-${numPages} (${config.concurrency} en paralelo)...`);
@@ -1074,7 +1074,8 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
     const foundAuditCode = normalizeCodeForAudit(page.code);
     const matchAproximado = foundAuditCode &&
         expectedAuditCode &&
-        foundAuditCode !== expectedAuditCode;
+        foundAuditCode !== expectedAuditCode &&
+        page.codigo_verificado !== true;
 
     return {
         documento: match.documento,
