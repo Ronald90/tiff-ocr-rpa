@@ -42,12 +42,6 @@ const HANDWRITING_CONTRAST = 1.5;
 /** Longitud máxima de texto para considerar como rechazo del modelo */
 const REFUSAL_MAX_LENGTH = 200;
 
-/** Ventana del filtro de mediana que borra motas del escáner (3 px deja motas) */
-const BLANK_PAGE_MEDIAN_PX = 5;
-
-/** Fracción de tinta tolerada en una página en blanco (polvo: 1 de 100.000 px) */
-const BLANK_PAGE_MAX_INK_RATIO = 0.00001;
-
 // ── Cargar prompts desde archivos externos ────────────────────────────
 
 const PROMPTS = {
@@ -89,23 +83,21 @@ async function extractPageAsPng(tiffPath, pageIndex, maxWidth = config.maxImageW
 
 /**
  * Comprueba la página original, antes de cualquier reducción para Vision. Un
- * escaneo real nunca es uniforme: la mediana borra las motas del escáner y
- * conserva texto, sellos y firmas (la página real con menos tinta medida
- * conserva unos 26.000 px oscuros). stats() de sharp mide la imagen de entrada
- * sin aplicar la mediana, por eso se cuentan los píxeles del resultado.
+ * escaneo real nunca es uniforme: la mediana borra motas aisladas. Solo una
+ * página sin ningún píxel oscuro tras el filtro se acepta como vacía. stats()
+ * de sharp mide la imagen de entrada sin aplicar la mediana.
  */
-async function isVisuallyBlankPage(tiffPath, pageIndex) {
+export async function isVisuallyBlankPage(tiffPath, pageIndex) {
     const pixels = await sharp(tiffPath, { page: pageIndex })
         .removeAlpha()
         .toColourspace('b-w')
-        .median(BLANK_PAGE_MEDIAN_PX)
+        .median(config.blankPageMedianPx)
         .raw()
         .toBuffer();
-    let ink = 0;
     for (const value of pixels) {
-        if (value < 128) ink++;
+        if (value < config.blankPageDarkThreshold) return false;
     }
-    return ink / pixels.length <= BLANK_PAGE_MAX_INK_RATIO;
+    return true;
 }
 
 // ── Mejora de imagen para texto manuscrito ─────────────────────────────
@@ -656,14 +648,17 @@ async function readPage(tiffPath, pageIndex, adjuntos) {
         let text = (await transcribeWithVision(pngBuffer, pageNum)) || '';
 
         if (!text.trim()) {
-            if (await isVisuallyBlankPage(tiffPath, pageIndex)) {
-                return { pageIndex, pageNum, sizeKB, text: '', code: null, codeSource: null, blank: true, error: null };
-            }
-            // Un texto vacío con tinta visible puede ser un fallo puntual del
-            // modelo; la caché no guarda respuestas vacías, así que se repite.
-            logger.warn(`[OCR] Pagina ${pageNum}: texto vacio con contenido visible; se repite la transcripcion`);
+            // La primera respuesta vacía no prueba que la página esté en blanco.
+            // La caché no guarda respuestas vacías, así que se repite antes de
+            // decidir si se puede omitir la página.
+            logger.warn(`[OCR] Pagina ${pageNum}: texto vacio; se repite la transcripcion antes de comprobar si esta en blanco`);
             text = (await transcribeWithVision(pngBuffer, pageNum)) || '';
-            if (!text.trim()) throw new Error(`OCR vacio en pagina ${pageNum} con contenido visible; requiere revision`);
+            if (!text.trim()) {
+                if (await isVisuallyBlankPage(tiffPath, pageIndex)) {
+                    return { pageIndex, pageNum, sizeKB, text: '', code: null, codeSource: null, blank: true, error: null };
+                }
+                throw new Error(`OCR vacio en pagina ${pageNum} con contenido visible; requiere revision`);
+            }
         }
 
         const stampMatch = matchPageWithDocumentsByStamp(text, adjuntos);
@@ -885,7 +880,8 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
                 }
 
                 // Una lectura discrepante no invalida por sí sola el OCR de la
-                // página: pedir una tercera lectura al otro modelo, solo aquí.
+                // página: pedir una lectura adicional. Si los modelos de OCR e
+                // ID coinciden, la lectura sigue usando ese modelo sin caché.
                 const additionalModel = verifierModel === config.idModel ? config.model : config.idModel;
                 const additionalCode = await identifyDocNumber(pngBuffer, page.pageNum, {
                     model: additionalModel,
@@ -1417,7 +1413,7 @@ async function processFileImpl(tiffPath, outputDir) {
         paginas_documento_no_identificado: paginasDocumentoNoIdentificado.length > 0 ? paginasDocumentoNoIdentificado : undefined,
         _auditoria: {
             modelo: modelLabel(),
-            version_sistema: '2.3.4',
+            version_sistema: '2.3.5',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,

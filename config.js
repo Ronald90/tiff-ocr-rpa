@@ -11,6 +11,8 @@ const config = {
     textModel: process.env.OPENAI_TEXT_MODEL || '',
     ocrImageDetail: process.env.OCR_IMAGE_DETAIL || '',
     idImageDetail: process.env.ID_IMAGE_DETAIL || '',
+    blankPageMedianPx: Number(process.env.BLANK_PAGE_MEDIAN_PX),
+    blankPageDarkThreshold: Number(process.env.BLANK_PAGE_DARK_THRESHOLD),
     ocrReasoningEffort: process.env.OCR_REASONING_EFFORT || '',
     idReasoningEffort: process.env.ID_REASONING_EFFORT || '',
     textReasoningEffort: process.env.TEXT_REASONING_EFFORT || '',
@@ -83,6 +85,13 @@ for (const [key, value] of [
     ['OPENAI_MAX_IN_FLIGHT', config.openaiMaxInFlight]
 ]) {
     if (!Number.isInteger(value) || value < 1) throw new Error(`${key} debe ser un entero positivo`);
+}
+
+if (!Number.isInteger(config.blankPageMedianPx) || config.blankPageMedianPx < 3 || config.blankPageMedianPx % 2 !== 1) {
+    throw new Error('BLANK_PAGE_MEDIAN_PX debe ser un entero impar de al menos 3');
+}
+if (!Number.isInteger(config.blankPageDarkThreshold) || config.blankPageDarkThreshold < 1 || config.blankPageDarkThreshold > 255) {
+    throw new Error('BLANK_PAGE_DARK_THRESHOLD debe ser un entero entre 1 y 255');
 }
 
 if (!Number.isInteger(config.adjuntoChunkChars) || config.adjuntoChunkChars < 1000) {

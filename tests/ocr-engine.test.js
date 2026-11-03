@@ -6,7 +6,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import openai from '../openai-client.js';
 import config from '../config.js';
-import { processFile } from '../ocr-engine.js';
+import { isVisuallyBlankPage, processFile } from '../ocr-engine.js';
 
 // Cada pagina de los fixtures mide 60 + numero de pagina px de ancho, asi el
 // mock sabe que pagina recibe aunque el prompt no lo diga.
@@ -102,7 +102,8 @@ function mockOpenAI(adjuntos, pages) {
             calls.id.push(page);
             await delay(10);
             const codeInText = spec.text?.match(/R-\d{5,7}/)?.[0];
-            return completion(request.model === config.model
+            const readNumber = calls.id.filter(item => item === page).length;
+            return completion(readNumber > 1
                 ? (spec.verify ?? spec.id ?? codeInText ?? 'NO_ENCONTRADO')
                 : (spec.id ?? codeInText ?? 'NO_ENCONTRADO'));
         }
@@ -267,7 +268,7 @@ describe('processFile', () => {
         const mocked = openai.chat.completions.create;
         openai.chat.completions.create = (request, options) =>
             request.response_format?.json_schema?.name === 'adjunto_continuacion'
-                ? completion(JSON.stringify({ demandados: [], juez: 'Abg. Juan Perez Mamani', juzgado: '', tipo_documento_respaldo: '', nro_documento_respaldo: '', monto_retenido: '', moneda: '' }))
+                ? completion(JSON.stringify({ demandados: [], juez: 'Abg. Juan Perez', juzgado: '', tipo_documento_respaldo: '', nro_documento_respaldo: '', monto_retenido: '', moneda: '' }))
                 : mocked(request, options);
 
         const data = (await run(inkFixture)).extractedData;
@@ -276,6 +277,25 @@ describe('processFile', () => {
         assert.equal(data.estado_procesamiento, 'completo');
         assert.equal(data.ubicacion_adjuntos[0].juez, 'Juan Perez');
         assert.match(data.advertencias.join(' '), /juez o juzgado escrito distinto entre paginas: R-12345/);
+    });
+
+    it('marca error cuando dos paginas indican jueces realmente distintos', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: CONTINUACION }
+        });
+        const mocked = openai.chat.completions.create;
+        openai.chat.completions.create = (request, options) =>
+            request.response_format?.json_schema?.name === 'adjunto_continuacion'
+                ? completion(JSON.stringify({ demandados: [], juez: 'Carlos Gomez', juzgado: '', tipo_documento_respaldo: '', nro_documento_respaldo: '', monto_retenido: '', moneda: '' }))
+                : mocked(request, options);
+
+        const data = (await run(inkFixture)).extractedData;
+
+        assert.equal(data.tiene_errores, true);
+        assert.equal(data.estado_procesamiento, 'error');
+        assert.match(data.advertencias.join(' '), /Campos del mismo proceso contradictorios entre fragmentos: juez/);
     });
 
     it('acepta como en blanco una pagina con motas del escaner y OCR vacio', async () => {
@@ -289,7 +309,25 @@ describe('processFile', () => {
 
         assert.equal(result.errors, 0);
         assert.equal(result.extractedData.tiene_errores, false);
-        assert.equal(calls.ocr.filter(call => call.page === 3).length, 1);
+        assert.equal(calls.ocr.filter(call => call.page === 3).length, 2);
+    });
+
+    it('no clasifica como vacia una pagina grande con un codigo R pequeño', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-ocr-small-code-'));
+        const imagePath = path.join(tempDir, 'small-code.png');
+        const code = Buffer.from('<svg width="250" height="45"><text x="2" y="24" font-size="20" font-family="DejaVu Sans" fill="black">R-12345</text></svg>');
+
+        try {
+            await sharp({ create: { width: 2536, height: 3914, channels: 3, background: 'white' } })
+                .composite([{ input: code, left: 120, top: 150 }])
+                .png()
+                .toFile(imagePath);
+
+            assert.equal(await isVisuallyBlankPage(imagePath, 0), false);
+            assert.equal(await isVisuallyBlankPage(speckledFixture, 2), true);
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 
     it('detiene el adjunto ante un oficio distinto sin codigo R y exige revision', async () => {
@@ -404,7 +442,7 @@ describe('processFile', () => {
         assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
     });
 
-    it('resuelve una lectura visual discordante con un tercer intento de otro modelo', async () => {
+    it('resuelve una lectura visual discordante con una lectura adicional', async () => {
         const calls = mockOpenAI(['R-12345'], {
             1: { text: COVER },
             2: { text: `ASFI RECEPCION R-12345\n${OFICIO}`, id: 'R-12346', verify: 'R-12345' }

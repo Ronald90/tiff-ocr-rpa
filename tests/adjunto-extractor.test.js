@@ -179,6 +179,40 @@ describe('extraccion de adjuntos largos', () => {
         assert.equal(result._error, undefined);
     });
 
+    it('asocia una fila sin resolucion solo cuando su monto identifica una fila unica', async () => {
+        const principal = 'PAGINA R-241594\nCOBRANZA COACTIVA AL NIT 1234567 POR DOS RESOLUCIONES DETERMINATIVAS\n';
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+            demandados: [
+                { nombre: 'JUAN PEREZ', tipo_documento: 'NIT', nro_documento: '1234567', resolucion: 'RD 10/2025', monto: '1.000,00' },
+                { nombre: 'JUAN PEREZ', tipo_documento: 'NIT', nro_documento: '1234567', resolucion: 'RD 11/2025', monto: '2.500,00' },
+                { nombre: 'JUAN PEREZ', tipo_documento: 'NIT', nro_documento: '1234567', resolucion: '', monto: 'Bs. 2.500,00' }
+            ]
+        }) } }] });
+
+        const result = await extractAdjuntoFields(principal, { primaryText: principal });
+
+        assert.equal(result._error, undefined);
+        assert.deepEqual(result.demandados.map(item => [item.resolucion, item.monto]), [
+            ['RD 10/2025', '1.000,00'],
+            ['RD 11/2025', '2.500,00']
+        ]);
+    });
+
+    it('exige revision si una fila sin resolucion coincide con varias resoluciones', async () => {
+        const principal = 'PAGINA R-241594\nCOBRANZA COACTIVA AL NIT 1234567 POR DOS RESOLUCIONES DETERMINATIVAS\n';
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+            demandados: [
+                { nombre: 'JUAN PEREZ', tipo_documento: 'NIT', nro_documento: '1234567', resolucion: 'RD 10/2025', monto: '1.000,00' },
+                { nombre: 'JUAN PEREZ', tipo_documento: 'NIT', nro_documento: '1234567', resolucion: 'RD 11/2025', monto: '1.000,00' },
+                { nombre: 'JUAN PEREZ', tipo_documento: 'NIT', nro_documento: '1234567', resolucion: '', monto: '1.000,00' }
+            ]
+        }) } }] });
+
+        const result = await extractAdjuntoFields(principal, { primaryText: principal });
+
+        assert.match(result._error, /demandados\.resolucion_ambigua/);
+    });
+
     it('compara montos por su valor y no por su formato', async () => {
         const principal = 'PAGINA R-241594\nRETENGASE Bs. 89.516,17\nDEMANDADO: ANA PEREZ C.I. 1234567 POR Bs. 1.000\n';
         const continuacion = 'DETALLE DEL MISMO PROCESO\nANA PEREZ C.I. 1234567 1000,00\nTOTAL A RETENER 89.516,17\n';
@@ -199,25 +233,40 @@ describe('extraccion de adjuntos largos', () => {
         assert.equal(result.demandados.length, 1);
     });
 
-    it('avisa sin bloquear cuando juez o juzgado se escriben distinto entre paginas', async () => {
-        const principal = 'PAGINA R-241594\nJUZGADO PUBLICO CIVIL Y COMERCIAL 3º\n[FIRMA]\nMargarita Anez Tejerina\nJUEZ PUBLICO CIVIL-COMERCIAL DE LA CAPITAL 21°\n';
-        const continuacion = 'ACTUACION DEL MISMO PROCESO\nAbg. Alberto Llanos Martinez\nJUEZ PUBLICO CIVIL Y COMERCIAL TERCERO\n';
+    it('avisa sin bloquear por titulo profesional u ordinal equivalente', async () => {
+        const principal = 'PAGINA R-241594\nJUZGADO PUBLICO CIVIL Y COMERCIAL 3º\n[FIRMA]\nJuan Perez\nJUEZ PUBLICO CIVIL Y COMERCIAL TERCERO\n';
+        const continuacion = 'ACTUACION DEL MISMO PROCESO\nAbg. Juan Perez\nJUEZ PUBLICO CIVIL Y COMERCIAL TERCERO\n';
         let calls = 0;
         openai.chat.completions.create = async () => {
             calls++;
             return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(calls === 1
-                ? { juez: '', juzgado: 'JUZGADO PUBLICO CIVIL Y COMERCIAL 3º', demandados: [] }
-                : { juez: 'Abg. Alberto Llanos Martinez', juzgado: 'JUZGADO PUBLICO CIVIL Y COMERCIAL TERCERO', demandados: [] }) } }] };
+                ? { juez: 'Juan Perez', juzgado: 'JUZGADO PUBLICO CIVIL Y COMERCIAL 3º', demandados: [] }
+                : { juez: 'Abg. Juan Perez', juzgado: 'JUZGADO PUBLICO CIVIL Y COMERCIAL TERCERO', demandados: [] }) } }] };
         };
 
         const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
 
         assert.equal(result._error, undefined);
-        // El juez leido por el modelo gana al regex; el juzgado previo se conserva.
-        assert.equal(result.juez, 'Abg. Alberto Llanos Martinez');
+        assert.equal(result.juez, 'Juan Perez');
         assert.equal(result.juzgado, 'JUZGADO PUBLICO CIVIL Y COMERCIAL 3º');
         assert.equal(result._advertencia_valores_distintos.length, 2);
-        assert.match(result._advertencia_valores_distintos.join(' '), /TERCERO[\s\S]*Margarita Anez Tejerina/);
+    });
+
+    it('bloquea jueces y juzgados realmente distintos', async () => {
+        const principal = 'PAGINA R-241594\nJUZGADO PUBLICO CIVIL Y COMERCIAL 3º\n[FIRMA]\nMargarita Anez Tejerina\nJUEZ PUBLICO CIVIL Y COMERCIAL TERCERO\n';
+        const continuacion = 'ACTUACION DEL MISMO PROCESO\nAbg. Alberto Llanos Martinez\nJUEZ PUBLICO CIVIL Y COMERCIAL CUARTO\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => {
+            calls++;
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(calls === 1
+                ? { juez: '', juzgado: 'JUZGADO PUBLICO CIVIL Y COMERCIAL 3º', demandados: [] }
+                : { juez: 'Abg. Alberto Llanos Martinez', juzgado: 'JUZGADO PUBLICO CIVIL Y COMERCIAL CUARTO', demandados: [] }) } }] };
+        };
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+
+        assert.match(result._error, /juez/);
+        assert.match(result._error, /juzgado/);
     });
 });
 

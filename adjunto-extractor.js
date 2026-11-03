@@ -529,6 +529,26 @@ function sameFieldValue(a, b) {
     return canonical(a) === canonical(b);
 }
 
+/** Ignora títulos y variantes ordinales, sin equiparar personas o juzgados distintos. */
+function sameAuthorityValue(field, a, b) {
+    const canonical = value => {
+        let text = String(value)
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toUpperCase()
+            .replace(/^(?:ABG|ABOG|DR|DRA|LIC)\.?\s+/, '');
+        if (field === 'juzgado') {
+            const ordinals = ['PRIMERO', 'SEGUNDO', 'TERCERO', 'CUARTO', 'QUINTO', 'SEXTO', 'SEPTIMO', 'OCTAVO', 'NOVENO', 'DECIMO'];
+            for (const [index, ordinal] of ordinals.entries()) {
+                text = text.replace(new RegExp(`\\b${ordinal.replace(/O$/, '[OA]')}\\b`, 'g'), String(index + 1));
+            }
+            text = text.replace(/(\d)[º°ª]/g, '$1').replace(/\bY\b/g, ' ');
+        }
+        return text.replace(/[^A-Z0-9Ñ]+/g, ' ').trim().replace(/\s+/g, ' ');
+    };
+    return canonical(a) === canonical(b);
+}
+
 /** Lleva un monto a "entero.decimales" ("Bs. 1.000,00", "1000" y "1.000.oo" coinciden). */
 function canonicalAmount(value) {
     const text = normalizeDemandadoMonto(value).replace(/[oO]{2}$/, '00').replace(/\s/g, '');
@@ -551,7 +571,7 @@ function mergeDemandados(demandados) {
     const conflictingFields = new Set();
     for (const candidate of demandados) {
         const candidateName = candidate.razon_social || candidate.nombre;
-        const existing = rows.find(row => {
+        const matches = rows.filter(row => {
             // La misma persona con otra resolucion es otra fila de la orden
             // (por ejemplo, varias resoluciones tributarias del mismo NIT).
             if (row.resolucion && candidate.resolucion && !sameFieldValue(row.resolucion, candidate.resolucion)) {
@@ -565,6 +585,26 @@ function mergeDemandados(demandados) {
             }
             return rowName && candidateName && sameFieldValue(rowName, candidateName);
         });
+        let existing = matches.length === 1 ? matches[0] : null;
+        if (matches.length > 1) {
+            // Una fila sin resolución no pertenece necesariamente a la primera
+            // resolución de esa persona. El monto solo desambigua si coincide
+            // con exactamente una fila ya identificada.
+            const byResolution = candidate.resolucion
+                ? matches.filter(row => row.resolucion && sameFieldValue(row.resolucion, candidate.resolucion))
+                : matches;
+            const choices = byResolution.length > 0 ? byResolution : matches;
+            const byAmount = candidate.monto
+                ? choices.filter(row => row.monto && sameAmount(row.monto, candidate.monto))
+                : [];
+            if (choices.length === 1) existing = choices[0];
+            else if (byAmount.length === 1) existing = byAmount[0];
+            else {
+                conflictingFields.add('demandados.resolucion_ambigua');
+                rows.push({ ...candidate });
+                continue;
+            }
+        }
         if (!existing) {
             rows.push({ ...candidate });
             continue;
@@ -750,11 +790,11 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
                 if (!result[key]) continue;
                 if (!merged[key]) merged[key] = result[key];
                 else if (!sameFieldValue(merged[key], result[key])) {
-                    // Encabezado, sello y firma suelen escribir distinto al
-                    // mismo juez o juzgado ("Abg. ...", "3º" / "TERCERO"): se
-                    // conserva el dato previo y se avisa sin bloquear el TIFF.
-                    logger.warn(`[ADJUNTO-EXTRACT] Valor distinto de ${key} en fragmento ${index + 1}; se conserva el dato previo`);
-                    differentValues.push(`${key} "${result[key]}" en fragmento ${index + 1}; se conserva "${merged[key]}"`);
+                    if (sameAuthorityValue(key, merged[key], result[key])) {
+                        differentValues.push(`${key} "${result[key]}" en fragmento ${index + 1}; se conserva "${merged[key]}"`);
+                    } else {
+                        conflictingFields.add(key);
+                    }
                 }
             }
             for (const [valueKey, detailKey] of [
@@ -785,7 +825,11 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
     const primaryJudge = extractJuezFallback(chunks[0]);
     if (!merged.juez) merged.juez = primaryJudge;
     else if (primaryJudge && !sameFieldValue(primaryJudge, merged.juez)) {
-        differentValues.push(`juez "${primaryJudge}" segun la firma de la pagina principal; se conserva "${merged.juez}"`);
+        if (sameAuthorityValue('juez', primaryJudge, merged.juez)) {
+            differentValues.push(`juez "${primaryJudge}" segun la firma de la pagina principal; se conserva "${merged.juez}"`);
+        } else {
+            conflictingFields.add('juez');
+        }
     }
 
     const mergedDemandados = mergeDemandados(merged.demandados);
