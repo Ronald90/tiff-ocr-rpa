@@ -15,4 +15,5 @@ input/*
 processed/
 error/
 .ocr-cache/
+manual-code-confirmations.jsonl
 referencia-v2.1.0.txt

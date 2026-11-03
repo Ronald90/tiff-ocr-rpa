@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import openai from '../openai-client.js';
 import config from '../config.js';
 import { isVisuallyBlankPage, processFile } from '../ocr-engine.js';
+import { recordManualCodeConfirmation } from '../manual-code-confirmations.js';
 
 // Cada pagina de los fixtures mide 60 + numero de pagina px de ancho, asi el
 // mock sabe que pagina recibe aunque el prompt no lo diga.
@@ -28,6 +29,7 @@ const CONTINUACION = 'Continuacion de la tabla de demandados del oficio anterior
 const originalCreate = openai.chat.completions.create;
 const originalConcurrency = config.concurrency;
 const originalRetryDelayMs = config.retryDelayMs;
+const originalManualCodeConfirmationsFile = config.manualCodeConfirmationsFile;
 
 beforeEach(() => {
     config.concurrency = 2;
@@ -38,6 +40,7 @@ afterEach(() => {
     openai.chat.completions.create = originalCreate;
     config.concurrency = originalConcurrency;
     config.retryDelayMs = originalRetryDelayMs;
+    config.manualCodeConfirmationsFile = originalManualCodeConfirmationsFile;
 });
 
 function completion(content, finishReason = 'stop') {
@@ -476,20 +479,73 @@ describe('processFile', () => {
         assert.equal(calls.id.filter(page => page === 2).length, 2);
     });
 
-    it('relee la franja superior cuando dos lecturas de pagina completa discrepan', async () => {
+    it('exige revision cuando el recorte coincide pero dos lecturas completas discrepan', async () => {
         const calls = mockOpenAI(['R-12345'], {
             1: { text: COVER },
             2: { text: OFICIO, id: 'R-12346', cropped: 'R-12345' }
         });
 
         const data = (await run()).extractedData;
-        assert.equal(data.estado_procesamiento, 'completo');
-        assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, true);
+        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
         assert.equal(data.ubicacion_adjuntos[0].id_encontrado, 'R-12346');
         assert.equal(data.ubicacion_adjuntos[0].confianza, 0.8);
-        assert.equal(data.ubicacion_adjuntos[0]._advertencia_match_aproximado, undefined);
+        assert.match(data.ubicacion_adjuntos[0]._advertencia_match_aproximado, /Revisar manualmente/);
         assert.equal(data.ubicacion_adjuntos[0].codigo_lectura_recorte, 'R-12345');
         assert.equal(calls.id.filter(page => page === 2).length, 4);
+    });
+
+    it('acepta una confirmacion humana del TIFF exacto y deja trazabilidad', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-manual-confirmation-'));
+        config.manualCodeConfirmationsFile = path.join(tempDir, 'confirmations.jsonl');
+        try {
+            const entry = await recordManualCodeConfirmation(fixture, 2, 'R-12345', config.manualCodeConfirmationsFile);
+            const calls = mockOpenAI(['R-12345'], {
+                1: { text: COVER },
+                2: { text: OFICIO, id: 'R-12346' }
+            });
+
+            const data = (await run()).extractedData;
+            const adjunto = data.ubicacion_adjuntos[0];
+            assert.equal(data.estado_procesamiento, 'completo');
+            assert.equal(adjunto.id_encontrado, 'R-12346');
+            assert.equal(adjunto.codigo_verificado, true);
+            assert.equal(adjunto.codigo_verificacion_fuente, 'manual');
+            assert.deepEqual(data._auditoria.confirmaciones_manuales, [{ pagina: 2, codigo: 'R-12345' }]);
+            assert.equal(data._auditoria.hash_archivo_sha256, entry.hash_archivo_sha256);
+            assert.equal(calls.id.filter(page => page === 2).length, 1);
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('rechaza confirmaciones para otro TIFF o contradictorias en la misma pagina', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-manual-conflict-'));
+        config.manualCodeConfirmationsFile = path.join(tempDir, 'confirmations.jsonl');
+        try {
+            const entry = await recordManualCodeConfirmation(fixture, 2, 'R-12345', config.manualCodeConfirmationsFile);
+            await assert.rejects(
+                recordManualCodeConfirmation(fixture, 2, 'R-12346', config.manualCodeConfirmationsFile),
+                /confirmacion distinta/
+            );
+            mockOpenAI(['R-12345'], {
+                1: { text: COVER },
+                2: { text: OFICIO, id: 'R-12346' }
+            });
+
+            const otherTiff = (await run(longFixture)).extractedData;
+            assert.equal(otherTiff.estado_procesamiento, 'requiere_revision');
+            assert.equal(otherTiff.ubicacion_adjuntos[0].codigo_verificado, false);
+
+            fs.appendFileSync(config.manualCodeConfirmationsFile,
+                `${JSON.stringify({ ...entry, codigo: 'R-12346' })}\n`);
+            const conflicting = (await run()).extractedData;
+            assert.equal(conflicting.estado_procesamiento, 'requiere_revision');
+            assert.equal(conflicting.ubicacion_adjuntos[0].codigo_verificado, false);
+            assert.deepEqual(conflicting._auditoria.confirmaciones_manuales, []);
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 
     it('mantiene la revision cuando una aproximacion no obtiene confirmacion visual', async () => {

@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import sharp from 'sharp';
 import config from './config.js';
 import logger from './logger.js';
@@ -14,6 +13,7 @@ import {
 import { extractFields } from './extractor.js';
 import { extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
 import { withOpenAIUsage } from './completion-cache.js';
+import { loadManualCodeConfirmations, sha256File } from './manual-code-confirmations.js';
 import {
     matchSingleNumber,
     extractDocCode,
@@ -853,7 +853,7 @@ function reconcileMatches(pages, adjuntos, matchedCodes, numPages) {
 }
 
 /** Contrasta cada código asignado con una nueva lectura visual exacta. */
-async function verifyMatchedCodes(tiffPath, pages, numPages) {
+async function verifyMatchedCodes(tiffPath, pages, numPages, manualConfirmations = new Map()) {
     const matchedPages = pages.filter(page => page?.match);
     const unverified = [];
     if (matchedPages.length === 0) return unverified;
@@ -865,6 +865,14 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
         concurrency: config.concurrency,
         work: async index => {
             const page = matchedPages[index];
+            const manual = manualConfirmations.get(page.pageNum);
+            if (manual?.codigo === normalizeCodeForAudit(page.match.code)) {
+                return { page, visualCode: null, additionalCode: null, croppedCode: null, manual };
+            }
+            if (manualConfirmations.has(page.pageNum)) {
+                logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: confirmacion manual incompatible o contradictoria con ${page.match.code}; requiere revision`);
+                return { page, visualCode: null, additionalCode: null, croppedCode: null, manualConflict: true };
+            }
             try {
                 const pngBuffer = await extractPageAsPng(tiffPath, page.pageIndex);
                 // Si el primer hallazgo vino del modelo de ID, verificar con el
@@ -907,18 +915,21 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
                 return { page, visualCode: null, additionalCode: null, croppedCode: null };
             }
         },
-        onResult: ({ page, visualCode, additionalCode, croppedCode }) => {
+        onResult: ({ page, visualCode, additionalCode, croppedCode, manual, manualConflict }) => {
             const expectedCode = normalizeCodeForAudit(page.match.code);
             const observedCode = normalizeCodeForAudit(visualCode);
             const additionalObserved = additionalCode ? normalizeCodeForAudit(additionalCode) : null;
             const croppedObserved = croppedCode ? normalizeCodeForAudit(croppedCode) : null;
-            page.codigo_verificado = expectedCode === observedCode || expectedCode === additionalObserved || expectedCode === croppedObserved;
+            // Un solo recorte coincidente no resuelve dos lecturas completas
+            // contradictorias. En ese caso hace falta confirmacion humana.
+            page.codigo_verificado = !manualConflict && (Boolean(manual) || expectedCode === observedCode || expectedCode === additionalObserved);
+            page.codigo_verificacion_fuente = manual ? 'manual' : page.codigo_verificado ? 'vision' : null;
             page.codigo_lectura_visual = observedCode || null;
             page.codigo_lectura_adicional = additionalObserved;
             page.codigo_lectura_recorte = croppedObserved;
             if (page.codigo_verificado) {
-                if (expectedCode === croppedObserved && expectedCode !== observedCode && expectedCode !== additionalObserved) {
-                    logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en recorte superior; lecturas de pagina completa ${observedCode || 'NO_ENCONTRADO'} y ${additionalObserved || 'NO_ENCONTRADO'}`);
+                if (manual) {
+                    logger.success(`  [VERIFY-MANUAL] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado por usuario para el hash de este TIFF`);
                 } else if (expectedCode === additionalObserved && expectedCode !== observedCode) {
                     logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en lectura adicional; primera verificacion leyo ${observedCode || 'NO_ENCONTRADO'}`);
                 } else {
@@ -1089,6 +1100,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
         id_encontrado: page.code,
         pagina: pageNum,
         codigo_verificado: page.codigo_verificado === true,
+        codigo_verificacion_fuente: page.codigo_verificacion_fuente || undefined,
         codigo_lectura_visual: page.codigo_lectura_visual,
         codigo_lectura_adicional: page.codigo_lectura_adicional || undefined,
         codigo_lectura_recorte: page.codigo_lectura_recorte || undefined,
@@ -1100,20 +1112,6 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
             : undefined,
         ...adjuntoData
     };
-}
-
-/**
- * Calcula el SHA-256 de un archivo leyéndolo por partes, sin bloquear el
- * event loop ni cargar el TIFF completo en memoria.
- * @param {string} filePath
- * @returns {Promise<string>}
- */
-async function sha256File(filePath) {
-    const hash = crypto.createHash('sha256');
-    for await (const chunk of fs.createReadStream(filePath)) {
-        hash.update(chunk);
-    }
-    return hash.digest('hex');
 }
 
 // ── Funcion principal exportada ───────────────────────────────────────
@@ -1154,6 +1152,13 @@ async function processFileImpl(tiffPath, outputDir) {
     const metadata = await sharp(tiffPath).metadata();
     const numPages = metadata.pages || 1;
     logger.info(`Paginas: ${numPages} | Tamano: ${fileSizeMB.toFixed(1)} MB | Modelo: ${modelLabel()}`);
+    let archivoHash = '';
+    try {
+        archivoHash = await sha256File(tiffPath);
+    } catch (error) {
+        logger.warn(`[AUDIT] No se pudo calcular SHA-256 de ${path.basename(tiffPath)}: ${error.message}. No se aplicaran confirmaciones manuales.`);
+    }
+    const manualConfirmations = loadManualCodeConfirmations(archivoHash, config.manualCodeConfirmationsFile);
 
     // ===================================================================
     // FASE 1: Vision de caratula (puede ser multi-pagina) + extraccion
@@ -1217,7 +1222,7 @@ async function processFileImpl(tiffPath, outputDir) {
     }
 
     reconcileMatches(pages, adjuntos, matchedCodes, numPages);
-    const codigosNoVerificados = await verifyMatchedCodes(tiffPath, pages, numPages);
+    const codigosNoVerificados = await verifyMatchedCodes(tiffPath, pages, numPages, manualConfirmations);
 
     // ===================================================================
     // FASE 3: Extraccion de datos de cada adjunto (en paralelo)
@@ -1416,12 +1421,6 @@ async function processFileImpl(tiffPath, outputDir) {
         ? 'error'
         : tieneErrores ? 'requiere_revision' : 'completo';
 
-    // Hash SHA-256 del archivo original para trazabilidad
-    let archivoHash = '';
-    try {
-        archivoHash = await sha256File(tiffPath);
-    } catch { /* si falla el hash, no bloquear */ }
-
     const jsonOutput = {
         archivo_origen: path.basename(tiffPath),
         fecha_procesamiento: now,
@@ -1441,6 +1440,8 @@ async function processFileImpl(tiffPath, outputDir) {
             version_sistema: '2.3.5',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
+            confirmaciones_manuales: ubicacion_adjuntos.filter(a => a.codigo_verificacion_fuente === 'manual')
+                .map(a => ({ pagina: a.pagina, codigo: a.id_buscado })),
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
             adjuntos_recuperados_por_auditoria: adjuntosRecuperadosPorAuditoria.length > 0 ? adjuntosRecuperadosPorAuditoria.map(a => a.id_buscado) : undefined,
             adjuntos_match_aproximado: adjuntosConMatchAproximado.length > 0 ? adjuntosConMatchAproximado.map(a => a.id_buscado) : undefined

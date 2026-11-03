@@ -6,6 +6,14 @@ Configuración de la plantilla: `gpt-6-astra` transcribe las imágenes y `gpt-6.
 
 Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Cada adjunto incluye todas las páginas siguientes sin código propio, sin tope; una página en blanco se salta sin cerrar el adjunto. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto. Cada código ubicado se contrasta después con una segunda lectura de la imagen. Si difiere, se hace una lectura adicional con el otro modelo; si tampoco confirma el código, el TIFF requiere revisión.
 
+Si las lecturas completas discrepan del código esperado, un único recorte coincidente no lo confirma: requiere revisión humana. Para registrar un código leído directamente en el TIFF, configura `MANUAL_CODE_CONFIRMATIONS_FILE` en `.env` y ejecuta:
+
+```bash
+npm run confirm-code -- input/archivo.tif 31 R-241770
+```
+
+El comando comprueba que la página existe y guarda el código con el SHA-256 de todo el TIFF. Al volver a colocar ese mismo TIFF en `input/` y ejecutar `npm run watch`, esa página queda confirmada manualmente; el resto de las validaciones del documento siguen activas. Un TIFF modificado, una página distinta o confirmaciones contradictorias no heredan esa decisión. El archivo de confirmaciones contiene referencias a documentos y no se publica en `output/` ni se incluye en Git. La confirmación no modifica la transcripción OCR original ni corrige por sí sola otros campos o errores de extracción.
+
 ## Requisitos
 
 - Node.js 18+
@@ -126,7 +134,8 @@ Un código R mencionado y no localizado sigue siendo un error.
 | `documentos_adjuntos` | array | Documentos adjuntos listados |
 | `modificaciones` | array | Menciones de modificaciones normativas |
 | `estado_procesamiento` | string | `completo`, `requiere_revision` o `error`; solo `completo` se publica en `output/` en modo RPA |
-| `ubicacion_adjuntos[].codigo_verificado` | boolean | Indica si una lectura visual de verificación confirmó dígito por dígito el código R esperado |
+| `ubicacion_adjuntos[].codigo_verificado` | boolean | Indica si una lectura visual o confirmación humana del TIFF exacto confirmó el código R esperado |
+| `ubicacion_adjuntos[].codigo_verificacion_fuente` | string | `vision` o `manual`; la auditoría registra las confirmaciones humanas por página |
 
 ## Configuración (.env)
 
@@ -147,6 +156,7 @@ Un código R mencionado y no localizado sigue siendo un error.
 | `ID_MAX_OUTPUT_TOKENS` | — | Tope de salida para identificar códigos o juez |
 | `OPENAI_MAX_IN_FLIGHT` | — | Máximo global de llamadas simultáneas a OpenAI entre todos los archivos |
 | `OCR_CACHE_DIR` | vacío (desactivada) | Carpeta de caché privada de respuestas válidas; la plantilla usa `./.ocr-cache` |
+| `MANUAL_CODE_CONFIRMATIONS_FILE` | vacío (desactivadas) | Archivo JSONL local para confirmar códigos R por SHA-256 y página; la plantilla usa `./manual-code-confirmations.jsonl` |
 | `CONCURRENCY` | `2` | Páginas leídas y adjuntos extraídos en paralelo por archivo; los códigos se asignan en el orden del TIFF |
 | `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Intentos por llamada ante errores transitorios (red, timeout, 429, 5xx); un 400/401/403/404/422 no se reintenta |

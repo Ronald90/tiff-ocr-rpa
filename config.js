@@ -39,6 +39,9 @@ const config = {
     errorDir: path.resolve(process.env.ERROR_DIR || './error'),
     // Vacío desactiva la reutilización. Se configura explícitamente en .env.
     ocrCacheDir: process.env.OCR_CACHE_DIR ? path.resolve(process.env.OCR_CACHE_DIR) : '',
+    // Vacío desactiva las confirmaciones manuales; definirlo en .env para usarlas.
+    manualCodeConfirmationsFile: process.env.MANUAL_CODE_CONFIRMATIONS_FILE
+        ? path.resolve(process.env.MANUAL_CODE_CONFIRMATIONS_FILE) : '',
 
     // Watcher
     watchIntervalMs: parseInt(process.env.WATCH_INTERVAL_MS, 10) || 5000,

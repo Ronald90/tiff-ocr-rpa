@@ -305,6 +305,7 @@ function startWatcher() {
     logger.info(`   Processed: ${config.processedDir}`);
     logger.info(`   Error:     ${config.errorDir}`);
     logger.info(`   Caché API: ${config.ocrCacheDir || 'desactivada (configura OCR_CACHE_DIR en .env)'}`);
+    logger.info(`   Confirmaciones R: ${config.manualCodeConfirmationsFile || 'desactivadas (configura MANUAL_CODE_CONFIRMATIONS_FILE en .env)'}`);
     logger.info(`   Intervalo: ${config.watchIntervalMs / 1000}s`);
     logger.info(`   Modelo:    ${config.model}`);
     logger.info(`   Archivos en paralelo: ${config.fileConcurrency}`);
