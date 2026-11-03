@@ -35,6 +35,8 @@ const config = {
     outputDir: path.resolve(process.env.OUTPUT_DIR || './output'),
     processedDir: path.resolve(process.env.PROCESSED_DIR || './processed'),
     errorDir: path.resolve(process.env.ERROR_DIR || './error'),
+    // Vacío desactiva la reutilización. Se configura explícitamente en .env.
+    ocrCacheDir: process.env.OCR_CACHE_DIR ? path.resolve(process.env.OCR_CACHE_DIR) : '',
 
     // Watcher
     watchIntervalMs: parseInt(process.env.WATCH_INTERVAL_MS, 10) || 5000,

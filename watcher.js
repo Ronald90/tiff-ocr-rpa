@@ -308,6 +308,7 @@ function startWatcher() {
     logger.info(`   Output:    ${config.outputDir}`);
     logger.info(`   Processed: ${config.processedDir}`);
     logger.info(`   Error:     ${config.errorDir}`);
+    logger.info(`   Caché API: ${config.ocrCacheDir || 'desactivada (configura OCR_CACHE_DIR en .env)'}`);
     logger.info(`   Intervalo: ${config.watchIntervalMs / 1000}s`);
     logger.info(`   Modelo:    ${config.model}`);
     logger.info(`   Archivos en paralelo: ${config.fileConcurrency}`);

@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import config from './config.js';
 import proxyFetch from './proxy.js';
 import { isInsufficientQuotaError } from './openai-errors.js';
+import { cacheCompletions } from './completion-cache.js';
 
 // Instancia compartida de OpenAI — reutilizada por ocr-engine.js y extractor.js
 // Si hay proxy, se inyecta un fetch custom con undici ProxyAgent como dispatcher.
@@ -66,6 +67,9 @@ export function limitCompletions(create, maxInFlight, defaultRetryDelayMs) {
 }
 
 const create = openai.chat.completions.create.bind(openai.chat.completions);
-openai.chat.completions.create = limitCompletions(create, config.openaiMaxInFlight, config.retryDelayMs);
+openai.chat.completions.create = cacheCompletions(
+    limitCompletions(create, config.openaiMaxInFlight, config.retryDelayMs),
+    config.ocrCacheDir
+);
 
 export default openai;

@@ -26,11 +26,13 @@ describe('extraccion de adjuntos largos', () => {
         config.adjuntoChunkChars = 24000;
         const sent = [];
         openai.chat.completions.create = async request => {
-            assert.equal(request.response_format?.json_schema?.name, 'adjunto_extraction');
             const content = request.messages[1].content;
-            sent.push(content);
-            const nombre = content.includes('INICIO_UNICO') ? 'Primero' :
-                content.includes('FINAL_UNICO') ? 'Ultimo' : '';
+            const fragment = content.match(/<<<FRAGMENTO>>>\n([\s\S]*?)\n<<<FIN FRAGMENTO>>>/)?.[1] || content;
+            assert.equal(request.response_format?.json_schema?.name,
+                sent.length === 0 ? 'adjunto_extraction' : 'adjunto_continuacion');
+            sent.push(fragment);
+            const nombre = fragment.includes('INICIO_UNICO') ? 'Primero' :
+                fragment.includes('FINAL_UNICO') ? 'Ultimo' : '';
             return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
                 nro_cite: 'CITE 100/2025',
                 demandados: nombre ? [{ nombre, nro_documento: nombre === 'Primero' ? '1' : '2' }] : []
@@ -63,7 +65,7 @@ describe('extraccion de adjuntos largos', () => {
         assert.match(result._error, /Fragmento 2\/\d+: 400 Invalid request/);
     });
 
-    it('marca revision si los fragmentos contradicen un campo del documento', async () => {
+    it('conserva los campos del documento principal aunque otro fragmento tenga otro cite', async () => {
         config.adjuntoChunkChars = 24000;
         let calls = 0;
         openai.chat.completions.create = async () => {
@@ -77,7 +79,8 @@ describe('extraccion de adjuntos largos', () => {
         const result = await extractAdjuntoFields(longAdjuntoText());
 
         assert.equal(calls, 2);
-        assert.match(result._error, /Campos contradictorios entre fragmentos: nro_cite/);
+        assert.equal(result.nro_cite, '100/2025');
+        assert.equal(result._error, undefined);
     });
 
     it('no marca contradiccion por mayusculas o tildes ni por un oficio citado dentro de la tabla', async () => {
@@ -97,8 +100,65 @@ describe('extraccion de adjuntos largos', () => {
         assert.equal(calls, 2);
         assert.equal(result._error, undefined);
         assert.equal(result.juez, 'Juan Pérez');
-        // El respaldo por regex lee el adjunto completo, no cada fragmento.
+        // El respaldo por regex solo lee el primer fragmento, que es el principal.
         assert.equal(result.nro_cite, '100/2025');
+    });
+
+    it('aisla la pagina R aun cuando el documento de respaldo cabe en el mismo fragmento', async () => {
+        const principal = 'PAGINA R-241594\nDEMANDANTE: BANCO UNION S.A.\nDEMANDADO: FAUSTINA CORIA MAMANI C.I. 4079866\n';
+        const respaldo = 'RESOLUCION DEL MISMO PROCESO R-241594\nJUEZ: Pedro Perez\nOFICIO DE OTRO PROCESO\nOf. Nro. 999/2025\nDEMANDADO: PERSONA DE OTRO PROCESO\n';
+        const sent = [];
+        openai.chat.completions.create = async request => {
+            const content = request.messages[1].content;
+            sent.push(content);
+            if (request.response_format?.json_schema?.name === 'adjunto_extraction') {
+                return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+                    demandante: 'BANCO UNION S.A.',
+                    demandados: [{ nombre: 'FAUSTINA CORIA MAMANI', nro_documento: '4079866' }]
+                }) } }] };
+            }
+            assert.deepEqual(request.response_format.json_schema.schema.required, [
+                'demandados', 'juez', 'juzgado', 'tipo_documento_respaldo',
+                'nro_documento_respaldo', 'monto_retenido', 'moneda'
+            ]);
+            assert.match(request.messages[0].content, /MISMO proceso principal/);
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+                juez: 'Pedro Perez',
+                demandados: [{ nombre: 'FAUSTINA CORIA MAMANI', nro_documento: '4079866', tipo_documento: 'CI' }]
+            }) } }] };
+        };
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + respaldo, { primaryText: principal });
+
+        assert.equal(sent.length, 2);
+        assert.ok(sent[0].includes('PAGINA R-241594'));
+        assert.ok(!sent[0].includes('OFICIO DE OTRO PROCESO'));
+        assert.ok(sent[1].includes('OFICIO DE OTRO PROCESO'));
+        assert.equal(result.demandante, 'BANCO UNION S.A.');
+        assert.equal(result.nro_cite, '');
+        assert.equal(result.juez, 'Pedro Perez');
+        assert.deepEqual(result.demandados.map(item => item.nombre), ['FAUSTINA CORIA MAMANI']);
+        assert.equal(result.demandados[0].tipo_documento, 'CI');
+        assert.equal(result._error, undefined);
+    });
+
+    it('marca una diferencia real del mismo demandado para revision', async () => {
+        const principal = 'PAGINA R-241594\nDEMANDADO: ANA PEREZ C.I. 1234567\nMONTO: Bs. 100,00\n';
+        const continuacion = 'RESOLUCION DEL MISMO PROCESO\nANA PEREZ C.I. 1234567\nMONTO: Bs. 200,00\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => {
+            calls++;
+            const monto = calls === 1 ? '100,00' : '200,00';
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+                demandados: [{ nombre: 'ANA PEREZ', tipo_documento: 'CI', nro_documento: '1234567', monto }]
+            }) } }] };
+        };
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+
+        assert.equal(result.demandados.length, 1);
+        assert.equal(result.demandados[0].monto, '100,00');
+        assert.match(result._error, /demandados\.monto/);
     });
 });
 

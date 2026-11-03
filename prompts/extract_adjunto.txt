@@ -7,6 +7,8 @@ PRINCIPIOS LEGALES DE EXTRACCION:
 - No corrijas nombres propios, razon social, CI, DNI, NIT, NUREJ, CUD, cites, fechas, resoluciones, montos ni errores ortograficos de la transcripcion.
 - Las fechas pueden normalizarse a YYYY-MM-DD solo cuando dia, mes y anio son legibles.
 - Si un campo esta parcialmente visible, conserva la parte visible y marca la parte faltante con [ILEGIBLE].
+- La pagina principal es la que identifica el documento con codigo R. Su cite, fecha, ciudad, demandante y tipo de proceso describen ese documento; un oficio, resolucion o contrato adjunto no los reemplaza.
+- Una actuacion posterior del mismo proceso puede aportar juez, juzgado, NUREJ/CUD, un monto explicitamente retenido y demandados. Excluye datos de procesos ajenos incluidos como respaldo.
 
 FORMATO DE SALIDA OBLIGATORIO:
 

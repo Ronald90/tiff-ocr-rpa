@@ -13,6 +13,7 @@ import {
 } from './openai-errors.js';
 import { extractFields } from './extractor.js';
 import { extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
+import { withOpenAIUsage } from './completion-cache.js';
 import {
     matchSingleNumber,
     extractDocCode,
@@ -40,9 +41,6 @@ const HANDWRITING_CONTRAST = 1.5;
 
 /** Longitud máxima de texto para considerar como rechazo del modelo */
 const REFUSAL_MAX_LENGTH = 200;
-
-/** Máximo de páginas previas a buscar en fallback de campos críticos */
-const MAX_PREV_PAGES_FALLBACK = 2;
 
 // ── Cargar prompts desde archivos externos ────────────────────────────
 
@@ -435,7 +433,7 @@ function normalizeIdentifiedCode(raw) {
  * @param {number} pageNum - Número de página
  * @returns {Promise<string|null>} - Código normalizado o null
  */
-async function identifyDocNumber(pngBuffer, pageNum, { model = config.idModel, reasoningEffort = config.idReasoningEffort } = {}) {
+async function identifyDocNumber(pngBuffer, pageNum, { model = config.idModel, reasoningEffort = config.idReasoningEffort, cacheMode } = {}) {
     const imgBase64 = pngBuffer.toString('base64');
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
@@ -465,7 +463,7 @@ async function identifyDocNumber(pngBuffer, pageNum, { model = config.idModel, r
                 messages,
                 reasoning_effort: reasoningEffort,
                 max_completion_tokens: config.idMaxOutputTokens
-            }, { signal: controller.signal });
+            }, { signal: controller.signal, cacheMode });
 
             let result = (response.choices?.[0]?.message?.content ?? '').trim();
 
@@ -478,7 +476,7 @@ async function identifyDocNumber(pngBuffer, pageNum, { model = config.idModel, r
                         messages,
                         reasoning_effort: reasoningEffort,
                         max_completion_tokens: config.idMaxOutputTokens
-                    }, { signal: controller.signal });
+                    }, { signal: controller.signal, cacheMode });
                     result = (fallbackResponse.choices?.[0]?.message?.content ?? '').trim();
                     logger.info(`[ID FALLBACK] Pagina ${pageNum} identificada con ${model}`);
                 } catch (fallbackErr) {
@@ -854,24 +852,43 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
                 const verifierModel = page.codeSource === 'texto' ? config.idModel : config.model;
                 const visualCode = await identifyDocNumber(pngBuffer, page.pageNum, {
                     model: verifierModel,
-                    reasoningEffort: page.codeSource === 'texto' ? config.idReasoningEffort : config.ocrReasoningEffort
+                    reasoningEffort: page.codeSource === 'texto' ? config.idReasoningEffort : config.ocrReasoningEffort,
+                    cacheMode: 'off'
                 });
-                return { page, visualCode };
+                if (normalizeCodeForAudit(visualCode) === normalizeCodeForAudit(page.match.code)) {
+                    return { page, visualCode, additionalCode: null };
+                }
+
+                // Una lectura discrepante no invalida por sí sola el OCR de la
+                // página: pedir una tercera lectura al otro modelo, solo aquí.
+                const additionalModel = verifierModel === config.idModel ? config.model : config.idModel;
+                const additionalCode = await identifyDocNumber(pngBuffer, page.pageNum, {
+                    model: additionalModel,
+                    reasoningEffort: additionalModel === config.model ? config.ocrReasoningEffort : config.idReasoningEffort,
+                    cacheMode: 'off'
+                });
+                return { page, visualCode, additionalCode };
             } catch (err) {
                 throwIfInsufficientQuota(err, `OpenAI verificacion codigo pagina ${page.pageNum}`);
-                return { page, visualCode: null };
+                return { page, visualCode: null, additionalCode: null };
             }
         },
-        onResult: ({ page, visualCode }) => {
+        onResult: ({ page, visualCode, additionalCode }) => {
             const expectedCode = normalizeCodeForAudit(page.match.code);
             const observedCode = normalizeCodeForAudit(visualCode);
-            page.codigo_verificado = expectedCode === observedCode;
+            const additionalObserved = additionalCode ? normalizeCodeForAudit(additionalCode) : null;
+            page.codigo_verificado = expectedCode === observedCode || expectedCode === additionalObserved;
             page.codigo_lectura_visual = observedCode || null;
+            page.codigo_lectura_adicional = additionalObserved;
             if (page.codigo_verificado) {
-                logger.success(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en imagen`);
+                if (expectedCode === additionalObserved && expectedCode !== observedCode) {
+                    logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en lectura adicional; primera verificacion leyo ${observedCode || 'NO_ENCONTRADO'}`);
+                } else {
+                    logger.success(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en imagen`);
+                }
             } else {
                 unverified.push({ pagina: page.pageNum, esperado: expectedCode, lectura_visual: observedCode || null });
-                logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: esperado ${expectedCode}, lectura visual ${observedCode || 'NO_ENCONTRADO'}; requiere revision`);
+                logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: esperado ${expectedCode}, lecturas ${observedCode || 'NO_ENCONTRADO'} y ${additionalObserved || 'NO_ENCONTRADO'}; requiere revision`);
             }
         }
     });
@@ -888,8 +905,12 @@ function extractPageDocumentId(text = '') {
 }
 
 function extractDocumentHeading(text = '') {
-    const match = text.match(/(?:^|\n)\s*(CARTA\s+CIRCULAR|OFICIO|RESOLUCI[ÓO]N)\b/i);
-    return match ? match[1].replace(/\s+/g, ' ').toUpperCase() : null;
+    // Una mención de "resolución" suele ser parte de una sentencia o un
+    // respaldo del adjunto R anterior. Solo un título aislado al comienzo de
+    // la página es evidencia suficiente de otro oficio/circular sin código.
+    const openingLines = text.split('\n').map(line => line.trim()).filter(Boolean).slice(0, 8);
+    const heading = openingLines.find(line => /^(?:CARTA\s+CIRCULAR|OFICIO)\s*[:.\-]?$/i.test(line));
+    return heading ? heading.replace(/[\s:.\-]+$/g, '').replace(/\s+/g, ' ').toUpperCase() : null;
 }
 
 /** Agrupa páginas sin código; un encabezado distinto requiere revisión. */
@@ -962,14 +983,14 @@ function hasCriticalAdjuntoFields(data) {
 
 /**
  * Extrae los datos de un adjunto: su página con match más las continuaciones.
- * Si faltan campos críticos agrega como contexto la página siguiente o las
- * anteriores; si falta el juez lo busca en el bloque de firma.
+ * Si faltan campos críticos puede leer la página siguiente; si falta el juez
+ * lo busca en el bloque de firma de la página principal.
  * @param {{page: object, continuation: object[]}} group - Adjunto a extraer
- * @param {{tiffPath: string, numPages: number, coverPageCount: number, pages: Array<object|null>, readPageText: (pageIndex: number) => Promise<string>}} doc
+ * @param {{tiffPath: string, numPages: number, pages: Array<object|null>, readPageText: (pageIndex: number) => Promise<string>}} doc
  * @returns {Promise<object>} - Entrada de ubicacion_adjuntos
  */
 async function extractAdjuntoGroup({ page, continuation }, doc) {
-    const { tiffPath, numPages, coverPageCount, pages, readPageText } = doc;
+    const { tiffPath, numPages, pages, readPageText } = doc;
     const { pageIndex, pageNum, sizeKB, match } = page;
 
     for (const cont of continuation) {
@@ -979,7 +1000,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
     let extractionText = [page.text, ...continuation.map(cont => cont.text)].join('\n\n');
     const totalPages = 1 + continuation.length;
     logger.info(`  [EXTRACT] Pagina ${pageNum}/${numPages} (${sizeKB} KB) - ${match.code}: extrayendo datos (${extractionText.length} chars, ${totalPages} pagina${totalPages > 1 ? 's' : ''})...`);
-    let adjuntoData = await extractAdjuntoFields(extractionText);
+    let adjuntoData = await extractAdjuntoFields(extractionText, { primaryText: page.text });
     let hasCriticalFields = hasCriticalAdjuntoFields(adjuntoData);
 
     // Vision+1: si no hay continuaciones detectadas y faltan campos críticos
@@ -993,39 +1014,12 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
                 if (nextPageText.trim().length > 0) {
                     extractionText = page.text + '\n\n' + nextPageText;
                     logger.info(`  [EXTRACT] Re-extrayendo con 2 paginas (${extractionText.length} chars)...`);
-                    adjuntoData = await extractAdjuntoFields(extractionText);
+                    adjuntoData = await extractAdjuntoFields(extractionText, { primaryText: page.text });
                     hasCriticalFields = hasCriticalAdjuntoFields(adjuntoData);
                 }
             } catch (nextErr) {
                 throwIfInsufficientQuota(nextErr, `OpenAI vision+1 pagina ${nextPageIndex + 1}`);
                 logger.warn(`  [VISION+1] Error en pagina ${nextPageIndex + 1}: ${nextErr.message}`);
-            }
-        }
-    }
-
-    // Fallback: páginas anteriores como contexto
-    if (!hasCriticalFields && pageIndex > coverPageCount) {
-        const startIdx = Math.max(coverPageCount, pageIndex - MAX_PREV_PAGES_FALLBACK);
-        logger.info(`  [FALLBACK] Campos criticos vacios. Buscando contexto en paginas anteriores ${startIdx + 1}-${pageNum}...`);
-
-        let combinedText = '';
-        for (let prevIdx = startIdx; prevIdx < pageIndex; prevIdx++) {
-            try {
-                combinedText += (await readPageText(prevIdx)) + '\n\n';
-            } catch (prevErr) {
-                throwIfInsufficientQuota(prevErr, `OpenAI fallback pagina ${prevIdx + 1}`);
-                logger.warn(`  [FALLBACK] Error Vision en pagina ${prevIdx + 1}: ${prevErr.message}`);
-            }
-        }
-
-        if (combinedText.trim().length > 0) {
-            const fullText = combinedText + extractionText;
-            logger.info(`  [FALLBACK] Re-extrayendo con texto combinado Vision (${fullText.length} chars)...`);
-            adjuntoData = await extractAdjuntoFields(fullText);
-            if (hasCriticalAdjuntoFields(adjuntoData)) {
-                logger.success('  [FALLBACK] Campos criticos recuperados con Vision');
-            } else {
-                logger.warn('  [FALLBACK] Aun sin campos criticos despues del fallback multi-pagina Vision');
             }
         }
     }
@@ -1051,6 +1045,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
         pagina: pageNum,
         codigo_verificado: page.codigo_verificado === true,
         codigo_lectura_visual: page.codigo_lectura_visual,
+        codigo_lectura_adicional: page.codigo_lectura_adicional || undefined,
         paginas_continuacion: continuation.length > 0 ? continuation.length : undefined,
         confianza: match.score,
         recuperado_por_auditoria: page.rescuedByText || undefined,
@@ -1090,7 +1085,7 @@ async function sha256File(filePath) {
  * @param {string} outputDir - Directorio donde guardar los archivos de salida
  * @returns {Promise<{outputPath: string, jsonPath: string, numPages: number, success: number, errors: number, skipped: number, elapsed: string, extractedData: object}>}
  */
-export async function processFile(tiffPath, outputDir) {
+async function processFileImpl(tiffPath, outputDir) {
     const startTime = Date.now();
     const d = new Date();
     const now = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
@@ -1193,7 +1188,6 @@ export async function processFile(tiffPath, outputDir) {
         const doc = {
             tiffPath,
             numPages,
-            coverPageCount,
             pages,
             readPageText: createPageTextReader(tiffPath, pages, transcribedPages)
         };
@@ -1330,7 +1324,7 @@ export async function processFile(tiffPath, outputDir) {
     const advertencias = [];
 
     if (adjuntosConError.length > 0) {
-        advertencias.push(`${adjuntosConError.length} adjunto(s) con error de extraccion: ${adjuntosConError.map(a => a.id_buscado).join(', ')}`);
+        advertencias.push(`${adjuntosConError.length} adjunto(s) con error de extraccion: ${adjuntosConError.map(a => `${a.id_buscado} (${a._error})`).join(', ')}`);
     }
     if (extractedData._error) {
         advertencias.push(`Extraccion de caratula incompleta: ${extractedData._error}`);
@@ -1392,7 +1386,7 @@ export async function processFile(tiffPath, outputDir) {
         paginas_documento_no_identificado: paginasDocumentoNoIdentificado.length > 0 ? paginasDocumentoNoIdentificado : undefined,
         _auditoria: {
             modelo: modelLabel(),
-            version_sistema: '2.3.1',
+            version_sistema: '2.3.3',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
@@ -1431,4 +1425,8 @@ export async function processFile(tiffPath, outputDir) {
     }
 
     return { outputPath, jsonPath, numPages, success: successCount, errors: errorCount, skipped: skippedCount, elapsed: elapsedStr, extractedData: jsonOutput };
+}
+
+export function processFile(tiffPath, outputDir) {
+    return withOpenAIUsage(path.basename(tiffPath), () => processFileImpl(tiffPath, outputDir));
 }

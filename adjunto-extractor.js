@@ -87,9 +87,31 @@ const ADJUNTO_RESPONSE_FORMAT = {
     }
 };
 
+const CONTINUATION_FIELDS = [
+    'demandados', 'juez', 'juzgado', 'tipo_documento_respaldo',
+    'nro_documento_respaldo', 'monto_retenido', 'moneda'
+];
+
+const ADJUNTO_CONTINUATION_RESPONSE_FORMAT = {
+    type: 'json_schema',
+    json_schema: {
+        name: 'adjunto_continuacion',
+        strict: true,
+        schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: Object.fromEntries(CONTINUATION_FIELDS.map(key => [
+                key, ADJUNTO_RESPONSE_FORMAT.json_schema.schema.properties[key]
+            ])),
+            required: CONTINUATION_FIELDS
+        }
+    }
+};
+
 // Cargar prompts desde archivos externos
 const ADJUNTO_PROMPT = fs.readFileSync(path.resolve('./prompts/extract_adjunto.txt'), 'utf-8');
 const ADJUNTO_USER_PROMPT = fs.readFileSync(path.resolve('./prompts/extract_adjunto_user.txt'), 'utf-8');
+const ADJUNTO_CONTINUATION_PROMPT = fs.readFileSync(path.resolve('./prompts/extract_adjunto_continuacion.txt'), 'utf-8');
 
 /**
  * Intenta extraer el número de cite del texto transcrito usando patrones regex.
@@ -411,10 +433,9 @@ function normalizeDemandadoMonto(monto) {
 /**
  * Normaliza la moneda por demandado al mismo formato usado por el campo global.
  * @param {string} moneda - Moneda extraída para un demandado
- * @param {string} fallbackCurrency - Moneda detectada en el texto transcrito
  * @returns {string} - "BOB", "USD", "UFV" o cadena vacía
  */
-function normalizeDemandadoMoneda(moneda, fallbackCurrency) {
+function normalizeDemandadoMoneda(moneda) {
     const raw = String(moneda || '').trim();
 
     if (/^\$us\.?$/i.test(raw) || /^USD$/i.test(raw) || /^d[oó]lares$/i.test(raw)) {
@@ -429,16 +450,15 @@ function normalizeDemandadoMoneda(moneda, fallbackCurrency) {
         return 'BOB';
     }
 
-    return fallbackCurrency || '';
+    return '';
 }
 
 /**
  * Garantiza que el resultado tenga todos los campos esperados.
  * @param {object} data - Datos crudos del modelo
- * @param {string} [ocrText] - Texto transcrito original para respaldos de normalización
  * @returns {object} - Resultado normalizado
  */
-function normalizeAdjuntoResult(data, ocrText = '') {
+function normalizeAdjuntoResult(data) {
     const result = { ...ADJUNTO_EMPTY };
 
     if (!data || typeof data !== 'object') {
@@ -455,10 +475,9 @@ function normalizeAdjuntoResult(data, ocrText = '') {
         result.demandados = [];
     }
 
-    const demandadoMontoCurrency = detectDemandadoMontoCurrency(ocrText);
     result.tipo_proceso = normalizeTipoProcesoValue(result.tipo_proceso);
     result.juez = normalizeJuezValue(result.juez);
-    result.moneda = normalizeDemandadoMoneda(result.moneda, '');
+    result.moneda = normalizeDemandadoMoneda(result.moneda);
 
     // Normalizar cada demandado y filtrar los que no tienen identificador
     result.demandados = result.demandados
@@ -469,7 +488,7 @@ function normalizeAdjuntoResult(data, ocrText = '') {
             nro_documento: d.nro_documento || '',
             resolucion: d.resolucion || '',
             monto: normalizeDemandadoMonto(d.monto),
-            moneda: normalizeDemandadoMoneda(d.moneda, demandadoMontoCurrency)
+            moneda: normalizeDemandadoMoneda(d.moneda)
         }))
         .filter(d => d.nombre || d.razon_social || d.nro_documento);
 
@@ -477,11 +496,10 @@ function normalizeAdjuntoResult(data, ocrText = '') {
 }
 
 /**
- * Completa desde el texto los campos que el modelo dejó vacíos. Se aplica una
- * sola vez sobre el adjunto completo: por fragmento, una coincidencia suelta en
- * la tabla contradiría el valor real.
+ * Completa solo desde la pagina principal los campos que el modelo dejo vacios.
+ * Un oficio o resolucion adjunta no puede aportar datos del documento R.
  * @param {object} result - Resultado normalizado (se modifica)
- * @param {string} ocrText - Texto transcrito completo del adjunto
+ * @param {string} ocrText - Texto transcrito de la pagina principal
  */
 function applyTextFallbacks(result, ocrText) {
     if (!result.tipo_proceso) {
@@ -502,7 +520,7 @@ function applyTextFallbacks(result, ocrText) {
     }
 }
 
-/** Compara dos valores de fragmentos sin distinguir mayúsculas, tildes ni espacios. */
+/** Compara valores repetidos sin diferencias de mayusculas, tildes o espacios. */
 function sameFieldValue(a, b) {
     const canonical = value => String(value)
         .normalize('NFD')
@@ -511,6 +529,35 @@ function sameFieldValue(a, b) {
         .trim()
         .toUpperCase();
     return canonical(a) === canonical(b);
+}
+
+/** Une menciones de la misma persona sin perder datos ni ocultar diferencias reales. */
+function mergeDemandados(demandados) {
+    const rows = [];
+    const conflictingFields = new Set();
+    for (const candidate of demandados) {
+        const candidateName = candidate.razon_social || candidate.nombre;
+        const existing = rows.find(row => {
+            const rowName = row.razon_social || row.nombre;
+            const bothIds = row.nro_documento && candidate.nro_documento;
+            if (bothIds) {
+                return sameFieldValue(row.nro_documento, candidate.nro_documento) &&
+                    (!row.tipo_documento || !candidate.tipo_documento || sameFieldValue(row.tipo_documento, candidate.tipo_documento));
+            }
+            return rowName && candidateName && sameFieldValue(rowName, candidateName);
+        });
+        if (!existing) {
+            rows.push({ ...candidate });
+            continue;
+        }
+        for (const key of Object.keys(candidate)) {
+            if (!existing[key]) existing[key] = candidate[key];
+            else if (candidate[key] && !sameFieldValue(existing[key], candidate[key])) {
+                conflictingFields.add(`demandados.${key}`);
+            }
+        }
+    }
+    return { rows, conflictingFields };
 }
 
 /** Divide el texto sin descartar caracteres y prioriza límites de página o línea. */
@@ -546,12 +593,13 @@ function splitAdjuntoText(ocrText) {
     return chunks;
 }
 
-async function extractAdjuntoChunk(chunk, index, total) {
+async function extractAdjuntoChunk(chunk, index, total, mode, primaryText) {
     logger.info(`[ADJUNTO-EXTRACT] Extrayendo fragmento ${index + 1}/${total} (${chunk.length} chars)...`);
 
-    const chunkInstruction = total > 1
-        ? `\n\nEste es el fragmento ${index + 1} de ${total} del mismo adjunto. Extrae todos los demandados visibles en ESTE fragmento. Para campos no visibles aqui, devuelve vacio. No inventes datos de otros fragmentos.`
-        : '';
+    const primaryInstruction = 'ALCANCE DE ESTA LLAMADA: el texto enviado es la pagina principal que identifica el documento con codigo R. Extrae de ella los campos del esquema. No inventes campos que solo podrian constar en otras paginas.';
+    const userContent = mode === 'primary'
+        ? `${renderPrompt(ADJUNTO_USER_PROMPT, { text: chunk })}\n\n${primaryInstruction}`
+        : `Pagina principal de referencia (no extraer datos de aqui):\n<<<PRINCIPAL>>>\n${primaryText}\n<<<FIN PRINCIPAL>>>\n\nFragmento ${index + 1} de ${total}; extrae datos del mismo proceso solo de este fragmento:\n<<<FRAGMENTO>>>\n${chunk}\n<<<FIN FRAGMENTO>>>`;
 
     let maxTokens = ADJUNTO_MAX_OUTPUT_TOKENS;
 
@@ -563,15 +611,17 @@ async function extractAdjuntoChunk(chunk, index, total) {
                 model,
                 reasoning_effort: config.textReasoningEffort,
                 max_completion_tokens: maxTokens,
-                response_format: ADJUNTO_RESPONSE_FORMAT,
+                response_format: mode === 'primary' ? ADJUNTO_RESPONSE_FORMAT : ADJUNTO_CONTINUATION_RESPONSE_FORMAT,
                 messages: [
                     {
                         role: 'system',
-                        content: ADJUNTO_PROMPT
+                        content: mode === 'primary'
+                            ? `${ADJUNTO_PROMPT}\n\n${primaryInstruction}`
+                            : ADJUNTO_CONTINUATION_PROMPT
                     },
                     {
                         role: 'user',
-                        content: renderPrompt(ADJUNTO_USER_PROMPT, { text: chunk }) + chunkInstruction
+                        content: userContent
                     }
                 ]
             });
@@ -591,7 +641,7 @@ async function extractAdjuntoChunk(chunk, index, total) {
                 throw new Error('JSON invalido devuelto por el modelo');
             }
 
-            const normalized = normalizeAdjuntoResult(parsed, chunk);
+            const normalized = normalizeAdjuntoResult(parsed);
 
             logger.success(`[ADJUNTO-EXTRACT] Campos del adjunto extraidos correctamente con ${model}`);
             return normalized;
@@ -634,38 +684,82 @@ async function extractAdjuntoChunk(chunk, index, total) {
     return { ...ADJUNTO_EMPTY, _error: 'Sin intentos disponibles' };
 }
 
-/** Extrae cada fragmento completo y une los registros sin perder filas. */
-export async function extractAdjuntoFields(ocrText) {
+/** La pagina que contiene el codigo R define los campos del documento principal. */
+export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
     if (!ocrText || ocrText.trim().length < 50) {
         logger.warn('[ADJUNTO-EXTRACT] Texto demasiado corto para extraer campos');
         return { ...ADJUNTO_EMPTY, _error: 'Texto del adjunto demasiado corto para extraer campos' };
     }
 
-    const chunks = splitAdjuntoText(ocrText);
-    if (chunks.join('') !== ocrText) {
-        return { ...ADJUNTO_EMPTY, _error: 'La division del adjunto no conservo todo el texto' };
+    let chunks;
+    if (primaryText !== undefined) {
+        if (!primaryText || !ocrText.startsWith(primaryText)) {
+            return { ...ADJUNTO_EMPTY, _error: 'El texto del adjunto no comienza con la pagina principal' };
+        }
+        const continuationChunks = splitAdjuntoText(ocrText.slice(primaryText.length));
+        chunks = [primaryText, ...continuationChunks];
+        if (chunks.join('') !== ocrText) {
+            return { ...ADJUNTO_EMPTY, _error: 'La division del adjunto no conservo todo el texto' };
+        }
+    } else {
+        chunks = splitAdjuntoText(ocrText);
+        if (chunks.join('') !== ocrText) {
+            return { ...ADJUNTO_EMPTY, _error: 'La division del adjunto no conservo todo el texto' };
+        }
     }
 
     const merged = { ...ADJUNTO_EMPTY, demandados: [] };
     const conflictingFields = new Set();
 
     for (let index = 0; index < chunks.length; index++) {
-        const result = await extractAdjuntoChunk(chunks[index], index, chunks.length);
+        if (!chunks[index].trim()) continue;
+        const result = await extractAdjuntoChunk(chunks[index], index, chunks.length, index === 0 ? 'primary' : 'continuation', chunks[0]);
         if (result._error) {
             return { ...ADJUNTO_EMPTY, _error: `Fragmento ${index + 1}/${chunks.length}: ${result._error}` };
         }
 
         merged.demandados.push(...result.demandados);
-        for (const key of Object.keys(ADJUNTO_EMPTY)) {
-            if (key === 'demandados' || !result[key]) continue;
-            if (!merged[key]) merged[key] = result[key];
-            else if (!sameFieldValue(merged[key], result[key])) conflictingFields.add(key);
+        if (index === 0) {
+            for (const key of Object.keys(ADJUNTO_EMPTY)) {
+                if (key !== 'demandados') merged[key] = result[key];
+            }
+            applyTextFallbacks(merged, chunks[0]);
+        } else {
+            for (const key of ['juez', 'juzgado']) {
+                if (!result[key]) continue;
+                if (!merged[key]) merged[key] = result[key];
+                else if (!sameFieldValue(merged[key], result[key])) {
+                    logger.warn(`[ADJUNTO-EXTRACT] Valor distinto de ${key} en fragmento ${index + 1}; se conserva el dato previo`);
+                    conflictingFields.add(key);
+                }
+            }
+            for (const [valueKey, detailKey] of [
+                ['tipo_documento_respaldo', 'nro_documento_respaldo'],
+                ['monto_retenido', 'moneda']
+            ]) {
+                // El numero o la moneda aislados no pueden vincularse con el
+                // tipo o el monto de otra pagina.
+                if (!result[valueKey]) continue;
+                if (!merged[valueKey]) merged[valueKey] = result[valueKey];
+                else if (!sameFieldValue(merged[valueKey], result[valueKey])) {
+                    conflictingFields.add(valueKey);
+                    continue;
+                }
+                if (result[detailKey]) {
+                    if (!merged[detailKey]) merged[detailKey] = result[detailKey];
+                    else if (!sameFieldValue(merged[detailKey], result[detailKey])) {
+                        conflictingFields.add(detailKey);
+                    }
+                }
+            }
         }
     }
 
-    applyTextFallbacks(merged, ocrText);
+    const mergedDemandados = mergeDemandados(merged.demandados);
+    merged.demandados = mergedDemandados.rows;
+    for (const key of mergedDemandados.conflictingFields) conflictingFields.add(key);
     if (conflictingFields.size > 0) {
-        merged._error = `Campos contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
+        merged._error = `Campos del mismo proceso contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
     }
     if (chunks.length > 1) merged._fragmentos_extraccion = chunks.length;
     return merged;

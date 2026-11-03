@@ -67,7 +67,7 @@ function mockOpenAI(adjuntos, pages) {
             if (adjuntos === null) throw Object.assign(new Error('400 Invalid request'), { status: 400 });
             return completion(JSON.stringify({ documentos_adjuntos: adjuntos }));
         }
-        if (formatName === 'adjunto_extraction') {
+        if (formatName === 'adjunto_extraction' || formatName === 'adjunto_continuacion') {
             assert.equal(request.model, config.textModel);
             calls.extract++;
             calls.extractTexts.push(request.messages[1].content);
@@ -75,7 +75,9 @@ function mockOpenAI(adjuntos, pages) {
             calls.maxActiveExtract = Math.max(calls.maxActiveExtract, activeExtract);
             await delay(10);
             activeExtract--;
-            return completion(JSON.stringify({ nro_cite: 'CITE 100/2025', demandante: 'Persona de Prueba', juez: 'Juan Perez' }));
+            return completion(JSON.stringify(formatName === 'adjunto_continuacion'
+                ? { demandados: [], juez: '', juzgado: '', tipo_documento_respaldo: '', nro_documento_respaldo: '', monto_retenido: '', moneda: '' }
+                : { nro_cite: 'CITE 100/2025', demandante: 'Persona de Prueba', juez: 'Juan Perez' }));
         }
 
         const page = pageOf(request);
@@ -284,6 +286,20 @@ describe('processFile', () => {
         ]);
     });
 
+    it('incluye resoluciones de respaldo dentro de la continuación', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\nCITE 100/2025\n${OFICIO}` },
+            3: { text: 'Sistema de Registro Judicial SIREJ\nRESOLUCIÓN Nro. 86/2025\nSENTENCIA INICIAL' }
+        });
+
+        const data = (await run(inkFixture)).extractedData;
+
+        assert.equal(data.tiene_errores, false);
+        assert.equal(data.paginas_documento_no_identificado, undefined);
+        assert.equal(data.ubicacion_adjuntos[0].paginas_continuacion, 1);
+    });
+
     it('usa la imagen cuando el texto no muestra el codigo y rescata pendientes con identificacion dirigida', async () => {
         const calls = mockOpenAI(['R-12345', 'R-54321'], {
             1: { text: COVER },
@@ -335,6 +351,21 @@ describe('processFile', () => {
             { pagina: 2, esperado: 'R-12345', lectura_visual: 'R-12346' }
         ]);
         assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
+    });
+
+    it('resuelve una lectura visual discordante con un tercer intento de otro modelo', async () => {
+        const calls = mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}`, id: 'R-12346', verify: 'R-12345' }
+        });
+
+        const data = (await run()).extractedData;
+
+        assert.equal(data.tiene_errores, false);
+        assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, true);
+        assert.equal(data.ubicacion_adjuntos[0].codigo_lectura_visual, 'R-12346');
+        assert.equal(data.ubicacion_adjuntos[0].codigo_lectura_adicional, 'R-12345');
+        assert.equal(calls.id.filter(page => page === 2).length, 2);
     });
 
     it('marca errores sin reintentar una solicitud invalida y reintenta un OCR truncado con mas tokens', async () => {

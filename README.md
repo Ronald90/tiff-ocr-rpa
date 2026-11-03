@@ -4,7 +4,7 @@ Sistema RPA para procesar archivos TIFF multipágina mediante Vision con el mode
 
 Configuración de la plantilla: `gpt-6-astra` transcribe las imágenes y `gpt-6.1-terra` identifica los códigos y extrae los campos JSON. La transcripción usa `detail: "original"` para conservar el texto pequeño. Cada etapa se puede configurar por separado en `.env`.
 
-Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Cada adjunto incluye todas las páginas siguientes sin código propio, sin tope; una página en blanco se salta sin cerrar el adjunto. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto. Cada código ubicado se contrasta después con una segunda lectura de la imagen. Si los dígitos difieren o no se leen, el TIFF requiere revisión.
+Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Cada adjunto incluye todas las páginas siguientes sin código propio, sin tope; una página en blanco se salta sin cerrar el adjunto. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto. Cada código ubicado se contrasta después con una segunda lectura de la imagen. Si difiere, se hace una lectura adicional con el otro modelo; si tampoco confirma el código, el TIFF requiere revisión.
 
 ## Requisitos
 
@@ -38,16 +38,33 @@ Coloca archivos `.tif`/`.tiff` en la carpeta `input/`. El sistema los procesa au
 
 Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
-TIFF termina con errores, solo se conserva el original en `error/`.
+TIFF termina con errores, `error/` conserva solo el original, sin TXT ni JSON.
+Si configuras `OCR_CACHE_DIR`, las respuestas válidas de la API se conservan en
+esa carpeta como archivos binarios comprimidos. Al volver a intentar el mismo
+TIFF se reutilizan las solicitudes idénticas, incluso si el TIFF anterior fue
+rechazado. Cambiar el modelo, el prompt, sus parámetros o la imagen crea otra
+solicitud y no reutiliza la respuesta vieja. Las lecturas visuales de
+verificación siempre se repiten para permitir resolver discrepancias. La
+primera ejecución después de activar la caché todavía debe consultar la API.
+La carpeta de caché contiene datos del documento; se puede borrar manualmente
+cuando ya no se necesite, y no se publica en `output/`.
+El log `[API-USAGE]` informa por TIFF las llamadas nuevas, las reutilizadas y
+los tokens de entrada y salida que devolvió la API. No calcula dinero porque
+los precios dependen de cada modelo y cuenta.
 Los adjuntos largos se dividen en fragmentos sin descartar texto. La carátula
-también se envía completa. Si falla la extracción de alguna parte o se detectan
-valores contradictorios entre fragmentos (sin contar mayúsculas, tildes ni espacios),
-el TIFF se envía a `error/` y no se publican TXT ni JSON.
+también se envía completa. Los campos del documento R se extraen de su página
+principal; las páginas adicionales aportan demandados, juez, juzgado,
+NUREJ/CUD y montos retenidos cuando pertenecen al mismo proceso, pero no
+reemplazan el cite, la fecha ni el demandante del principal. Los campos vacíos
+se dejan vacíos cuando solo figuran en un documento de otro proceso.
+Si falla la extracción de alguna parte, el TIFF se envía a `error/` y no se
+publican TXT ni JSON.
 Una respuesta OCR vacía solo se acepta si la imagen de esa página es uniforme;
 si no es uniforme, el TIFF va a `error/`. Un encabezado de CITE, oficio o carta
 circular con identificador distinto dentro de una supuesta continuación se
-marca para revisión. Un encabezado de oficio, carta circular o resolución sin
-identificador legible también requiere revisión; ninguno publica resultados.
+marca para revisión. Un título aislado de oficio o carta circular al inicio de
+la página, sin identificador legible, también requiere revisión. Las menciones
+de resoluciones dentro de un adjunto siguen como páginas de respaldo.
 
 El JSON aceptado incluye `estado_procesamiento: "completo"`. Los estados
 `"requiere_revision"` (por ejemplo, un código R que no coincide en la segunda
@@ -97,7 +114,7 @@ Un código R mencionado y no localizado sigue siendo un error.
 | `documentos_adjuntos` | array | Documentos adjuntos listados |
 | `modificaciones` | array | Menciones de modificaciones normativas |
 | `estado_procesamiento` | string | `completo`, `requiere_revision` o `error`; solo `completo` se publica en `output/` en modo RPA |
-| `ubicacion_adjuntos[].codigo_verificado` | boolean | Indica si una segunda lectura visual coincidió dígito por dígito con el código R esperado |
+| `ubicacion_adjuntos[].codigo_verificado` | boolean | Indica si una lectura visual de verificación confirmó dígito por dígito el código R esperado |
 
 ## Configuración (.env)
 
@@ -115,6 +132,7 @@ Un código R mencionado y no localizado sigue siendo un error.
 | `OCR_MAX_OUTPUT_TOKENS` | — | Tope de salida de la transcripción; una salida truncada se reintenta una vez con el doble de tokens |
 | `ID_MAX_OUTPUT_TOKENS` | — | Tope de salida para identificar códigos o juez |
 | `OPENAI_MAX_IN_FLIGHT` | — | Máximo global de llamadas simultáneas a OpenAI entre todos los archivos |
+| `OCR_CACHE_DIR` | vacío (desactivada) | Carpeta de caché privada de respuestas válidas; la plantilla usa `./.ocr-cache` |
 | `CONCURRENCY` | `2` | Páginas leídas y adjuntos extraídos en paralelo por archivo; los códigos se asignan en el orden del TIFF |
 | `FILE_CONCURRENCY` | `3` | Archivos procesados en paralelo |
 | `MAX_RETRIES` | `5` | Intentos por llamada ante errores transitorios (red, timeout, 429, 5xx); un 400/401/403/404/422 no se reintenta |
