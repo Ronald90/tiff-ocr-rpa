@@ -135,7 +135,8 @@ async function processPendingFiles() {
         }
         if (allFiles.length === 0) return;
 
-        // Filtrar archivos YA procesados usando el Map en memoria
+        // Todo TIFF colocado de nuevo en input/ es un nuevo intento. El
+        // historial registra resultados, pero no bloquea la validación.
         const pending = [];
 
         for (const filename of allFiles) {
@@ -166,12 +167,7 @@ async function processPendingFiles() {
                 const fileKey = `${filename}::${stat.size}::${partialHash}`;
 
                 if (historyMap.has(fileKey)) {
-                    const prev = historyMap.get(fileKey);
-                    logger.warn(`Saltando ${filename} (ya procesado el ${prev.date})`);
-                    try {
-                        moveFile(filePath, config.processedDir);
-                    } catch { /* ignore */ }
-                    continue;
+                    logger.info(`[REPROCESS] ${filename} ya figura en el historial; se procesara otra vez porque esta en input/.`);
                 }
 
                 pending.push({ filename, filePath, fileKey });

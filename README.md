@@ -37,6 +37,9 @@ Coloca archivos `.tif`/`.tiff` en la carpeta `input/`. El sistema los procesa au
 - `output/<nombre>_datos.json` — Datos estructurados extraídos
 
 Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
+Si vuelves a colocar el mismo TIFF en `input/`, el watcher lo procesa de nuevo;
+el historial registra los intentos y no impide validar cambios. Si ya existe
+un resultado con el mismo nombre en `output/`, el nuevo recibe un sufijo de tiempo.
 En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
 TIFF termina con errores, `error/` conserva solo el original, sin TXT ni JSON.
 Si configuras `OCR_CACHE_DIR`, las respuestas válidas de la API se conservan en
