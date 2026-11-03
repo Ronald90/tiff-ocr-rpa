@@ -44,9 +44,6 @@ const REFUSAL_MAX_LENGTH = 200;
 /** Máximo de páginas previas a buscar en fallback de campos críticos */
 const MAX_PREV_PAGES_FALLBACK = 2;
 
-/** Máximo de páginas sin código propio que se agregan a un adjunto como continuación */
-const MAX_CONTINUATION_PAGES = 10;
-
 // ── Cargar prompts desde archivos externos ────────────────────────────
 
 const PROMPTS = {
@@ -732,11 +729,9 @@ async function locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos) {
             }
 
             // Con todos los codigos ubicados solo faltan las continuaciones del
-            // ultimo adjunto, que terminan en la primera pagina con codigo,
-            // vacia o con error.
-            if (wasPending && pending.length === 0) {
-                lastPageToRead = page.pageIndex + MAX_CONTINUATION_PAGES;
-            } else if (!wasPending && (page.error || page.code || !page.text.trim())) {
+            // ultimo adjunto, que terminan en la primera pagina con codigo o
+            // con error. Una pagina en blanco no las corta.
+            if (!wasPending && (page.error || page.code)) {
                 lastPageToRead = Math.min(lastPageToRead, page.pageIndex);
             }
         }
@@ -871,8 +866,9 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
 }
 
 /**
- * Agrupa cada página con match con las páginas siguientes sin código propio,
- * que se toman como continuación del mismo adjunto (por ejemplo tablas largas).
+ * Agrupa cada página con match con todas las páginas siguientes sin código
+ * propio, que se toman como continuación del mismo adjunto (por ejemplo tablas
+ * largas). Las páginas en blanco se saltan sin cerrar el adjunto.
  * @param {Array<object|null>} pages - Páginas leídas
  * @param {number} coverPageCount - Páginas de carátula
  * @param {number} numPages - Total de páginas
@@ -886,14 +882,15 @@ function buildAdjuntoGroups(pages, coverPageCount, numPages) {
         if (!page?.match) continue;
 
         const continuation = [];
-        for (let next = pageIndex + 1; next < numPages && continuation.length < MAX_CONTINUATION_PAGES; next++) {
+        let next = pageIndex + 1;
+        for (; next < numPages; next++) {
             const candidate = pages[next];
-            if (!candidate || candidate.error || candidate.match || candidate.code || !candidate.text.trim()) break;
-            continuation.push(candidate);
+            if (!candidate || candidate.error || candidate.match || candidate.code) break;
+            if (candidate.text.trim()) continuation.push(candidate);
         }
 
         groups.push({ page, continuation });
-        pageIndex += continuation.length;
+        pageIndex = next - 1;
     }
 
     return groups;
@@ -1292,16 +1289,12 @@ export async function processFile(tiffPath, outputDir) {
 
     // Detectar errores y advertencias en los adjuntos extraidos
     const adjuntosConError = ubicacion_adjuntos.filter(a => a._error);
-    const adjuntosConTruncado = ubicacion_adjuntos.filter(a => a._advertencia_truncado);
     const adjuntosRecuperadosPorAuditoria = ubicacion_adjuntos.filter(a => a.recuperado_por_auditoria);
     const adjuntosConMatchAproximado = ubicacion_adjuntos.filter(a => a._advertencia_match_aproximado);
     const advertencias = [];
 
     if (adjuntosConError.length > 0) {
         advertencias.push(`${adjuntosConError.length} adjunto(s) con error de extraccion: ${adjuntosConError.map(a => a.id_buscado).join(', ')}`);
-    }
-    if (adjuntosConTruncado.length > 0) {
-        advertencias.push(`${adjuntosConTruncado.length} adjunto(s) con texto truncado (posible perdida de demandados): ${adjuntosConTruncado.map(a => a.id_buscado).join(', ')}`);
     }
     if (extractedData._error) {
         advertencias.push(`Extraccion de caratula incompleta: ${extractedData._error}`);
@@ -1327,7 +1320,6 @@ export async function processFile(tiffPath, outputDir) {
 
     const tieneErrores = Boolean(extractedData._error) ||
         adjuntosConError.length > 0 ||
-        adjuntosConTruncado.length > 0 ||
         codigosNoVerificados.length > 0 ||
         adjuntosConMatchAproximado.length > 0 ||
         notFound.length > 0 ||
@@ -1363,7 +1355,6 @@ export async function processFile(tiffPath, outputDir) {
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
-            adjuntos_truncados: adjuntosConTruncado.length > 0 ? adjuntosConTruncado.map(a => a.id_buscado) : undefined,
             adjuntos_recuperados_por_auditoria: adjuntosRecuperadosPorAuditoria.length > 0 ? adjuntosRecuperadosPorAuditoria.map(a => a.id_buscado) : undefined,
             adjuntos_match_aproximado: adjuntosConMatchAproximado.length > 0 ? adjuntosConMatchAproximado.map(a => a.id_buscado) : undefined
         }

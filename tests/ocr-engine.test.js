@@ -8,9 +8,10 @@ import openai from '../openai-client.js';
 import config from '../config.js';
 import { processFile } from '../ocr-engine.js';
 
-// Cada pagina del fixture mide 60 + numero de pagina px de ancho, asi el mock
-// sabe que pagina recibe aunque el prompt no lo diga.
+// Cada pagina de los fixtures mide 60 + numero de pagina px de ancho, asi el
+// mock sabe que pagina recibe aunque el prompt no lo diga.
 const fixture = path.resolve('tests/fixtures/ten-pages.tiff');
+const longFixture = path.resolve('tests/fixtures/fourteen-pages.tiff');
 const readPrompt = name => fs.readFileSync(path.resolve('prompts', name), 'utf-8');
 const SYSTEM = {
     ocr: readPrompt('ocr_vision_system.txt'),
@@ -54,7 +55,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
  * lectura visual) y `targeted` (identificacion dirigida).
  */
 function mockOpenAI(adjuntos, pages) {
-    const calls = { ocr: [], id: [], targeted: [], extract: 0, maxActiveOcr: 0, maxActiveExtract: 0 };
+    const calls = { ocr: [], id: [], targeted: [], extract: 0, extractTexts: [], maxActiveOcr: 0, maxActiveExtract: 0 };
     let activeOcr = 0;
     let activeExtract = 0;
 
@@ -68,6 +69,7 @@ function mockOpenAI(adjuntos, pages) {
         if (formatName === 'adjunto_extraction') {
             assert.equal(request.model, config.textModel);
             calls.extract++;
+            calls.extractTexts.push(request.messages[1].content);
             activeExtract++;
             calls.maxActiveExtract = Math.max(calls.maxActiveExtract, activeExtract);
             await delay(10);
@@ -197,6 +199,25 @@ describe('processFile', () => {
         assert.equal(result.success, ocrPages.size);
         assert.equal(calls.maxActiveOcr, 2);
         assert.equal(calls.maxActiveExtract, 2);
+    });
+
+    it('agrega todas las continuaciones de un adjunto largo sin cortar en paginas en blanco', async () => {
+        const pages = { 1: { text: COVER }, 2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` } };
+        for (let page = 3; page <= 14; page++) {
+            pages[page] = { text: page === 8 ? '' : `${CONTINUACION} Fila ${page}.` };
+        }
+        const calls = mockOpenAI(['R-12345'], pages);
+
+        const result = await run(longFixture);
+        const data = result.extractedData;
+        const sent = calls.extractTexts.join('\n');
+
+        assert.equal(data.tiene_errores, false);
+        // 12 paginas despues del sello: 11 con texto y la 8 en blanco.
+        assert.deepEqual(data.ubicacion_adjuntos.map(a => [a.pagina, a.paginas_continuacion]), [[2, 11]]);
+        assert.ok([3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14].every(page => sent.includes(`Fila ${page}.`)));
+        assert.equal(result.success, 14);
+        assert.equal(data.paginas_omitidas, 1);
     });
 
     it('usa la imagen cuando el texto no muestra el codigo y rescata pendientes con identificacion dirigida', async () => {

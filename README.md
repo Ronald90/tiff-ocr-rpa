@@ -4,7 +4,7 @@ Sistema RPA para procesar archivos TIFF multipágina mediante Vision con el mode
 
 Configuración de la plantilla: `gpt-6-astra` transcribe las imágenes y `gpt-6.1-terra` identifica los códigos y extrae los campos JSON. La transcripción usa `detail: "original"` para conservar el texto pequeño. Cada etapa se puede configurar por separado en `.env`.
 
-Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto. Cada código ubicado se contrasta después con una segunda lectura de la imagen. Si los dígitos difieren o no se leen, el TIFF requiere revisión.
+Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Cada adjunto incluye todas las páginas siguientes sin código propio, sin tope; una página en blanco se salta sin cerrar el adjunto. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto. Cada código ubicado se contrasta después con una segunda lectura de la imagen. Si los dígitos difieren o no se leen, el TIFF requiere revisión.
 
 ## Requisitos
 
@@ -41,7 +41,7 @@ En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
 TIFF termina con errores, solo se conserva el original en `error/`.
 Los adjuntos largos se dividen en fragmentos sin descartar texto. La carátula
 también se envía completa. Si falla la extracción de alguna parte o se detectan
-valores contradictorios entre fragmentos,
+valores contradictorios entre fragmentos (sin contar mayúsculas, tildes ni espacios),
 el TIFF se envía a `error/` y no se publican TXT ni JSON.
 
 El JSON aceptado incluye `estado_procesamiento: "completo"`. Los estados

@@ -457,17 +457,8 @@ function normalizeAdjuntoResult(data, ocrText = '') {
 
     const demandadoMontoCurrency = detectDemandadoMontoCurrency(ocrText);
     result.tipo_proceso = normalizeTipoProcesoValue(result.tipo_proceso);
-    if (!result.tipo_proceso) {
-        result.tipo_proceso = extractExplicitTipoProcesoFallback(ocrText);
-    }
     result.juez = normalizeJuezValue(result.juez);
-    if (!result.juez) {
-        result.juez = extractJuezFallback(ocrText);
-    }
-    result.moneda = normalizeDemandadoMoneda(
-        result.moneda,
-        result.monto_retenido ? detectDemandadoMontoCurrency(ocrText) : ''
-    );
+    result.moneda = normalizeDemandadoMoneda(result.moneda, '');
 
     // Normalizar cada demandado y filtrar los que no tienen identificador
     result.demandados = result.demandados
@@ -483,6 +474,43 @@ function normalizeAdjuntoResult(data, ocrText = '') {
         .filter(d => d.nombre || d.razon_social || d.nro_documento);
 
     return result;
+}
+
+/**
+ * Completa desde el texto los campos que el modelo dejó vacíos. Se aplica una
+ * sola vez sobre el adjunto completo: por fragmento, una coincidencia suelta en
+ * la tabla contradiría el valor real.
+ * @param {object} result - Resultado normalizado (se modifica)
+ * @param {string} ocrText - Texto transcrito completo del adjunto
+ */
+function applyTextFallbacks(result, ocrText) {
+    if (!result.tipo_proceso) {
+        result.tipo_proceso = extractExplicitTipoProcesoFallback(ocrText);
+    }
+    if (!result.juez) {
+        result.juez = extractJuezFallback(ocrText);
+    }
+    if (!result.moneda && result.monto_retenido) {
+        result.moneda = detectDemandadoMontoCurrency(ocrText);
+    }
+    if (!result.nro_cite) {
+        const fallbackNroCite = extractNroCiteFallback(ocrText);
+        if (fallbackNroCite) {
+            result.nro_cite = fallbackNroCite;
+            logger.info(`[ADJUNTO-EXTRACT] nro_cite recuperado por regex: ${fallbackNroCite}`);
+        }
+    }
+}
+
+/** Compara dos valores de fragmentos sin distinguir mayúsculas, tildes ni espacios. */
+function sameFieldValue(a, b) {
+    const canonical = value => String(value)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toUpperCase();
+    return canonical(a) === canonical(b);
 }
 
 /** Divide el texto sin descartar caracteres y prioriza límites de página o línea. */
@@ -564,13 +592,6 @@ async function extractAdjuntoChunk(chunk, index, total) {
             }
 
             const normalized = normalizeAdjuntoResult(parsed, chunk);
-            if (!normalized.nro_cite) {
-                const fallbackNroCite = extractNroCiteFallback(chunk);
-                if (fallbackNroCite) {
-                    normalized.nro_cite = fallbackNroCite;
-                    logger.info(`[ADJUNTO-EXTRACT] nro_cite recuperado por regex: ${fallbackNroCite}`);
-                }
-            }
 
             logger.success(`[ADJUNTO-EXTRACT] Campos del adjunto extraidos correctamente con ${model}`);
             return normalized;
@@ -638,10 +659,11 @@ export async function extractAdjuntoFields(ocrText) {
         for (const key of Object.keys(ADJUNTO_EMPTY)) {
             if (key === 'demandados' || !result[key]) continue;
             if (!merged[key]) merged[key] = result[key];
-            else if (merged[key] !== result[key]) conflictingFields.add(key);
+            else if (!sameFieldValue(merged[key], result[key])) conflictingFields.add(key);
         }
     }
 
+    applyTextFallbacks(merged, ocrText);
     if (conflictingFields.size > 0) {
         merged._error = `Campos contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
     }

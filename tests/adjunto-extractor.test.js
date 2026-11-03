@@ -79,6 +79,27 @@ describe('extraccion de adjuntos largos', () => {
         assert.equal(calls, 2);
         assert.match(result._error, /Campos contradictorios entre fragmentos: nro_cite/);
     });
+
+    it('no marca contradiccion por mayusculas o tildes ni por un oficio citado dentro de la tabla', async () => {
+        config.adjuntoChunkChars = 24000;
+        let calls = 0;
+        openai.chat.completions.create = async () => {
+            calls++;
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+                juez: calls === 1 ? 'Juan Pérez' : 'JUAN PEREZ',
+                demandados: []
+            }) } }] };
+        };
+        const text = `Oficio Nro. 100/2025\n${longAdjuntoText()}Ver Oficio Nro. 999/2025 de la fila anterior.\n`;
+
+        const result = await extractAdjuntoFields(text);
+
+        assert.equal(calls, 2);
+        assert.equal(result._error, undefined);
+        assert.equal(result.juez, 'Juan Pérez');
+        // El respaldo por regex lee el adjunto completo, no cada fragmento.
+        assert.equal(result.nro_cite, '100/2025');
+    });
 });
 
 describe('tipo_proceso handling', () => {
