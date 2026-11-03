@@ -210,6 +210,23 @@ describe('processFile', () => {
         assert.equal(calls.maxActiveExtract, 2);
     });
 
+    it('completa fecha y ciudad del cierre sin reemplazar el cite de la primera pagina', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: 'OTROSI.\nOruro, 25 de septiembre de 2025.\n[FIRMA]\nAbogado del caso.' },
+            4: { text: 'SENTENCIA INICIAL No 089/2025-MOEJ\nOruro, 02 de octubre de 2025\n[FIRMA]' }
+        });
+
+        const data = (await run()).extractedData;
+        const adjunto = data.ubicacion_adjuntos[0];
+
+        assert.equal(data.estado_procesamiento, 'completo');
+        assert.equal(adjunto.nro_cite, 'CITE 100/2025');
+        assert.equal(adjunto.fecha_cite, '2025-09-25');
+        assert.equal(adjunto.ciudad_cite, 'Oruro');
+    });
+
     it('agrega todas las continuaciones de un adjunto largo sin cortar en paginas en blanco', async () => {
         const pages = { 1: { text: COVER }, 2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` } };
         for (let page = 3; page <= 14; page++) {

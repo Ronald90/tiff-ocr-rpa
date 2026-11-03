@@ -519,6 +519,79 @@ function applyTextFallbacks(result, ocrText) {
     }
 }
 
+const DOCUMENT_MONTHS = {
+    enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
+    julio: 7, agosto: 8, septiembre: 9, octubre: 10, noviembre: 11, diciembre: 12
+};
+const MONTH_NAMES = Object.keys(DOCUMENT_MONTHS).join('|');
+const CLOSING_DATE_LINE = new RegExp(
+    `^\\s*([\\p{L}][\\p{L}\\s.-]{2,60})\\s*,\\s*(?:(\\d{1,2})\\s+(?:de\\s+)?(${MONTH_NAMES})|(${MONTH_NAMES}))\\s+(?:de|del)\\s+(\\d{4})\\.?\\s*$`,
+    'iu'
+);
+
+/** Una actuación nueva puede compartir TIFF y proceso, pero tiene otra fecha propia. */
+function beginsSeparateAct(text) {
+    const heading = text.split('\n').slice(0, 35).join('\n');
+    return /^\s*(?:SENTENCIA\s+INICIAL|AUTO\s+INTERLOCUTORIO|RESOLUCI[OÓ]N\s+(?:N[O°º.]|ADMINISTRATIVA)|NOTIFICACI[OÓ]N\s+PROCESAL)\b/im.test(heading);
+}
+
+/** Solo una fecha de cierre, próxima a la firma, pertenece al memorial principal. */
+function findClosingPlaceDate(text) {
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        const match = lines[i].match(CLOSING_DATE_LINE);
+        if (!match || !/\[FIRMA\]|\bFDO\.?\b/i.test(lines.slice(i + 1, i + 8).join('\n'))) continue;
+
+        const city = match[1].trim();
+        const day = Number(match[2]);
+        if (!match[2]) return { city, date: '' };
+
+        const month = DOCUMENT_MONTHS[match[3].toLowerCase()];
+        const year = Number(match[5]);
+        const date = new Date(Date.UTC(year, month - 1, day));
+        if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+            return { city, date: '' };
+        }
+        return { city, date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` };
+    }
+    return null;
+}
+
+/** Busca solo un cite explícito al comienzo de una continuación del memorial. */
+function findContinuationCite(text) {
+    const header = text.split('\n').slice(0, 18);
+    for (const line of header) {
+        if (!/^\s*(?:OF\.?\s*N|OFICIO\s*N|CITE\s*[:.-]|DSALR\s*[-/])/i.test(line)) continue;
+        const cite = extractNroCiteFallback(line);
+        if (cite) return cite;
+    }
+    return '';
+}
+
+/** Completa campos vacíos con continuaciones anteriores al primer documento de respaldo. */
+function applyContinuationMetadataFallback(result, continuationTexts = []) {
+    if (result.nro_cite && result.fecha_cite && result.ciudad_cite) return;
+
+    for (const text of continuationTexts) {
+        if (beginsSeparateAct(text)) break;
+
+        if (!result.nro_cite) result.nro_cite = findContinuationCite(text);
+
+        const closing = findClosingPlaceDate(text);
+        if (!closing) continue;
+
+        if (!result.fecha_cite && closing.date &&
+            (!result.ciudad_cite || sameFieldValue(result.ciudad_cite, closing.city))) {
+            result.fecha_cite = closing.date;
+        }
+        if (!result.ciudad_cite && closing.city &&
+            (!result.fecha_cite || !closing.date || result.fecha_cite === closing.date)) {
+            result.ciudad_cite = closing.city;
+        }
+        break;
+    }
+}
+
 /** Compara valores repetidos sin diferencias de mayusculas, tildes o espacios. */
 function sameFieldValue(a, b) {
     const canonical = value => String(value)
@@ -811,7 +884,7 @@ async function extractAdjuntoChunk(chunk, index, total, mode, primaryText) {
 }
 
 /** La pagina que contiene el codigo R define los campos del documento principal. */
-export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
+export async function extractAdjuntoFields(ocrText, { primaryText, continuationTexts = [] } = {}) {
     if (!ocrText || ocrText.trim().length < 50) {
         logger.warn('[ADJUNTO-EXTRACT] Texto demasiado corto para extraer campos');
         return { ...ADJUNTO_EMPTY, _error: 'Texto del adjunto demasiado corto para extraer campos' };
@@ -892,6 +965,8 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
             }
         }
     }
+
+    applyContinuationMetadataFallback(merged, continuationTexts);
 
     // El bloque de firma suele estar en una continuacion: el regex sobre la
     // pagina principal solo completa el juez si ningun fragmento lo leyo.

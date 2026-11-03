@@ -142,6 +142,74 @@ describe('extraccion de adjuntos largos', () => {
         assert.equal(result._error, undefined);
     });
 
+    it('completa fecha y ciudad desde el cierre del memorial si faltan en la primera pagina', async () => {
+        const principal = 'R-241687\nFORMALIZA PROCESO MONITORIO EJECUTIVO\nDEMANDANTE: LEANDRA RAMOS GERONIMO\n';
+        const cierre = 'OTROSI 6.- Señalo domicilio procesal.\nOruro, 09 de octubre del 2025\n[FIRMA]\nDr. Andy Caller Vincenti\n';
+        const sentencia = 'SENTENCIA INICIAL.\nLUGAR Y FECHA: Oruro, 10 de octubre de 2025\n[FIRMA]\n';
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ demandados: [] }) } }] });
+
+        const result = await extractAdjuntoFields([principal, cierre, sentencia].join('\n\n'), {
+            primaryText: principal,
+            continuationTexts: [cierre, sentencia]
+        });
+
+        assert.equal(result.fecha_cite, '2025-10-09');
+        assert.equal(result.ciudad_cite, 'Oruro');
+        assert.equal(result.nro_cite, '');
+        assert.equal(result._error, undefined);
+    });
+
+    it('conserva los datos de la primera pagina y no toma el cite de una sentencia posterior', async () => {
+        const principal = 'R-241770\nDEMANDANTES: Juana Ivonne y Patricia Rodriguez\nFecha y ciudad del memorial en encabezado.\n';
+        const cierre = 'OFICIO N° 123/2025\nOTROSI.\nOruro, 25 de septiembre de 2025.\n[FIRMA]\n';
+        const sentencia = 'SENTENCIA INICIAL No 089/2025-MOEJ\nOf. N° 999/2025\nTarija, 02 de octubre de 2025\n[FIRMA]\n';
+        openai.chat.completions.create = async request => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(
+            request.response_format.json_schema.name === 'adjunto_extraction'
+                ? { nro_cite: '100/2025', fecha_cite: '2025-09-24', ciudad_cite: 'Sucre', demandados: [] }
+                : { demandados: [] }
+        ) } }] });
+
+        const result = await extractAdjuntoFields([principal, cierre, sentencia].join('\n\n'), {
+            primaryText: principal,
+            continuationTexts: [cierre, sentencia]
+        });
+
+        assert.equal(result.nro_cite, '100/2025');
+        assert.equal(result.fecha_cite, '2025-09-24');
+        assert.equal(result.ciudad_cite, 'Sucre');
+    });
+
+    it('recupera solo un cite explicito antes del cierre y no inventa un dia ausente', async () => {
+        const principal = 'R-241594\nINTERPONE DEMANDA EJECUTIVA\nDEMANDANTE BANCO UNION SOCIEDAD ANONIMA\n';
+        const cierre = 'Of. N° 623/2025\nOruro, septiembre de 2025\n[FIRMA]\n';
+        const sentencia = 'SENTENCIA INICIAL No 089/2025-MOEJ\nOruro, 23 de septiembre de 2025\n[FIRMA]\n';
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ demandados: [] }) } }] });
+
+        const result = await extractAdjuntoFields([principal, cierre, sentencia].join('\n\n'), {
+            primaryText: principal,
+            continuationTexts: [cierre, sentencia]
+        });
+
+        assert.equal(result.nro_cite, '623/2025');
+        assert.equal(result.ciudad_cite, 'Oruro');
+        assert.equal(result.fecha_cite, '');
+    });
+
+    it('no rellena fecha, ciudad ni cite desde una actuacion distinta', async () => {
+        const principal = 'R-241594\nINTERPONE DEMANDA EJECUTIVA\nDEMANDANTE BANCO UNION SOCIEDAD ANONIMA\n';
+        const sentencia = 'SENTENCIA INICIAL No 089/2025-MOEJ\nOf. N° 999/2025\nOruro, 23 de septiembre de 2025\n[FIRMA]\n';
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ demandados: [] }) } }] });
+
+        const result = await extractAdjuntoFields([principal, sentencia].join('\n\n'), {
+            primaryText: principal,
+            continuationTexts: [sentencia]
+        });
+
+        assert.equal(result.nro_cite, '');
+        assert.equal(result.fecha_cite, '');
+        assert.equal(result.ciudad_cite, '');
+    });
+
     it('marca una diferencia real del mismo demandado para revision', async () => {
         const principal = 'PAGINA R-241594\nDEMANDADO: ANA PEREZ C.I. 1234567\nMONTO: Bs. 100,00\n';
         const continuacion = 'RESOLUCION DEL MISMO PROCESO\nANA PEREZ C.I. 1234567\nMONTO: Bs. 200,00\n';

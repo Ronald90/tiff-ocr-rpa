@@ -1038,7 +1038,10 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
     let extractionText = [page.text, ...continuation.map(cont => cont.text)].join('\n\n');
     const totalPages = 1 + continuation.length;
     logger.info(`  [EXTRACT] Pagina ${pageNum}/${numPages} (${sizeKB} KB) - ${match.code}: extrayendo datos (${extractionText.length} chars, ${totalPages} pagina${totalPages > 1 ? 's' : ''})...`);
-    let adjuntoData = await extractAdjuntoFields(extractionText, { primaryText: page.text });
+    let adjuntoData = await extractAdjuntoFields(extractionText, {
+        primaryText: page.text,
+        continuationTexts: continuation.map(cont => cont.text)
+    });
     let hasCriticalFields = hasCriticalAdjuntoFields(adjuntoData);
 
     // Vision+1: si no hay continuaciones detectadas y faltan campos críticos
@@ -1052,7 +1055,10 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
                 if (nextPageText.trim().length > 0) {
                     extractionText = page.text + '\n\n' + nextPageText;
                     logger.info(`  [EXTRACT] Re-extrayendo con 2 paginas (${extractionText.length} chars)...`);
-                    adjuntoData = await extractAdjuntoFields(extractionText, { primaryText: page.text });
+                    adjuntoData = await extractAdjuntoFields(extractionText, {
+                        primaryText: page.text,
+                        continuationTexts: [nextPageText]
+                    });
                     hasCriticalFields = hasCriticalAdjuntoFields(adjuntoData);
                 }
             } catch (nextErr) {
