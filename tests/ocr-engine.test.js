@@ -12,6 +12,7 @@ import { processFile } from '../ocr-engine.js';
 // mock sabe que pagina recibe aunque el prompt no lo diga.
 const fixture = path.resolve('tests/fixtures/ten-pages.tiff');
 const longFixture = path.resolve('tests/fixtures/fourteen-pages.tiff');
+const inkFixture = path.resolve('tests/fixtures/three-pages-with-ink.tiff');
 const readPrompt = name => fs.readFileSync(path.resolve('prompts', name), 'utf-8');
 const SYSTEM = {
     ocr: readPrompt('ocr_vision_system.txt'),
@@ -116,7 +117,8 @@ function mockOpenAI(adjuntos, pages) {
 async function run(tiffPath = fixture) {
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-ocr-engine-'));
     try {
-        return await processFile(tiffPath, outputDir);
+        const result = await processFile(tiffPath, outputDir);
+        return { ...result, visionText: fs.readFileSync(result.outputPath, 'utf-8') };
     } finally {
         fs.rmSync(outputDir, { recursive: true, force: true });
     }
@@ -216,8 +218,70 @@ describe('processFile', () => {
         // 12 paginas despues del sello: 11 con texto y la 8 en blanco.
         assert.deepEqual(data.ubicacion_adjuntos.map(a => [a.pagina, a.paginas_continuacion]), [[2, 11]]);
         assert.ok([3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14].every(page => sent.includes(`Fila ${page}.`)));
+        assert.ok([3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14].every(page => result.visionText.includes(`Fila ${page}.`)));
+        assert.match(result.visionText, /PAGINA 14 \/ 14 - CONTINUACION DE R-12345/);
         assert.equal(result.success, 14);
         assert.equal(data.paginas_omitidas, 1);
+    });
+
+    it('rechaza un OCR vacio cuando la imagen contiene trazos', async () => {
+        const calls = mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: '' }
+        });
+
+        const result = await run(inkFixture);
+
+        assert.equal(result.extractedData.tiene_errores, true);
+        assert.equal(result.extractedData.estado_procesamiento, 'error');
+        assert.equal(result.errors, 1);
+        assert.equal(calls.id.includes(3), false);
+    });
+
+    it('detiene el adjunto ante un oficio distinto sin codigo R y exige revision', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\nCITE 100/2025\n${OFICIO}` },
+            3: { text: 'OFICIO Nro. 999/2025\nDocumento independiente sin sello R.' }
+        });
+
+        const result = await run(inkFixture);
+        const data = result.extractedData;
+
+        assert.equal(data.tiene_errores, true);
+        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.deepEqual(data.paginas_documento_no_identificado, [{ pagina: 3, identificador: '999/2025' }]);
+        assert.doesNotMatch(result.visionText, /Documento independiente sin sello R/);
+    });
+
+    it('mantiene una continuacion que repite el mismo CITE', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\nCITE 100/2025\n${OFICIO}` },
+            3: { text: `CITE 100/2025\n${CONTINUACION}` }
+        });
+
+        const result = await run(inkFixture);
+
+        assert.equal(result.extractedData.tiene_errores, false);
+        assert.equal(result.extractedData.paginas_documento_no_identificado, undefined);
+        assert.match(result.visionText, /PAGINA 3 \/ 3 - CONTINUACION DE R-12345/);
+    });
+
+    it('requiere revision si aparece otro encabezado sin identificador legible', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\nCITE 100/2025\n${OFICIO}` },
+            3: { text: 'OFICIO\nSeñores: nuevo documento sin numero visible.' }
+        });
+
+        const data = (await run(inkFixture)).extractedData;
+
+        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.deepEqual(data.paginas_documento_no_identificado, [
+            { pagina: 3, identificador: 'OFICIO sin identificador legible' }
+        ]);
     });
 
     it('usa la imagen cuando el texto no muestra el codigo y rescata pendientes con identificacion dirigida', async () => {
@@ -235,7 +299,8 @@ describe('processFile', () => {
             [2, 'R-12345', 'R-12345'],
             [3, 'R-54321', 'R-54321']
         ]);
-        assert.deepEqual([...new Set(calls.id)].sort((a, b) => a - b), [2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        // Las páginas realmente blancas no necesitan una llamada de ID.
+        assert.deepEqual([...new Set(calls.id)].sort((a, b) => a - b), [2, 3]);
         // La dirigida solo corre al final, en paginas sin match, y para al ubicar el ultimo codigo.
         assert.equal(calls.targeted.includes(2), false);
         assert.ok(calls.targeted.length <= config.concurrency);

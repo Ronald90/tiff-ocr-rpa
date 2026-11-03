@@ -33,7 +33,7 @@ npm run watch
 ```
 
 Coloca archivos `.tif`/`.tiff` en la carpeta `input/`. El sistema los procesa automáticamente y genera:
-- `output/<nombre>_vision.txt` — Texto transcrito completo
+- `output/<nombre>_vision.txt` — Texto de la carátula y de todas las páginas de los adjuntos ubicados, incluidas sus continuaciones
 - `output/<nombre>_datos.json` — Datos estructurados extraídos
 
 Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
@@ -43,6 +43,11 @@ Los adjuntos largos se dividen en fragmentos sin descartar texto. La carátula
 también se envía completa. Si falla la extracción de alguna parte o se detectan
 valores contradictorios entre fragmentos (sin contar mayúsculas, tildes ni espacios),
 el TIFF se envía a `error/` y no se publican TXT ni JSON.
+Una respuesta OCR vacía solo se acepta si la imagen de esa página es uniforme;
+si no es uniforme, el TIFF va a `error/`. Un encabezado de CITE, oficio o carta
+circular con identificador distinto dentro de una supuesta continuación se
+marca para revisión. Un encabezado de oficio, carta circular o resolución sin
+identificador legible también requiere revisión; ninguno publica resultados.
 
 El JSON aceptado incluye `estado_procesamiento: "completo"`. Los estados
 `"requiere_revision"` (por ejemplo, un código R que no coincide en la segunda

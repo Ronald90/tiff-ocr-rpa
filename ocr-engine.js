@@ -83,6 +83,12 @@ async function extractPageAsPng(tiffPath, pageIndex, maxWidth = config.maxImageW
     return image.png({ compressionLevel: 6 }).toBuffer();
 }
 
+/** Comprueba la página original, antes de cualquier reducción para Vision. */
+async function isVisuallyBlankPage(tiffPath, pageIndex) {
+    const stats = await sharp(tiffPath, { page: pageIndex }).stats();
+    return stats.channels.every(channel => channel.min === channel.max);
+}
+
 // ── Mejora de imagen para texto manuscrito ─────────────────────────────
 
 /**
@@ -630,6 +636,13 @@ async function readPage(tiffPath, pageIndex, adjuntos) {
         const sizeKB = (pngBuffer.length / 1024).toFixed(1);
         const text = (await transcribeWithVision(pngBuffer, pageNum)) || '';
 
+        if (!text.trim()) {
+            if (await isVisuallyBlankPage(tiffPath, pageIndex)) {
+                return { pageIndex, pageNum, sizeKB, text: '', code: null, codeSource: null, blank: true, error: null };
+            }
+            throw new Error(`OCR vacio en pagina ${pageNum} con contenido visible; requiere revision`);
+        }
+
         const stampMatch = matchPageWithDocumentsByStamp(text, adjuntos);
         if (stampMatch.matched) {
             return { pageIndex, pageNum, sizeKB, text, code: stampMatch.candidate, codeSource: 'texto', error: null };
@@ -865,15 +878,21 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
     return unverified;
 }
 
-/**
- * Agrupa cada página con match con todas las páginas siguientes sin código
- * propio, que se toman como continuación del mismo adjunto (por ejemplo tablas
- * largas). Las páginas en blanco se saltan sin cerrar el adjunto.
- * @param {Array<object|null>} pages - Páginas leídas
- * @param {number} coverPageCount - Páginas de carátula
- * @param {number} numPages - Total de páginas
- * @returns {Array<{page: object, continuation: object[]}>}
- */
+/** Lee identificadores explícitos de encabezado para detectar otro documento. */
+function extractPageDocumentId(text = '') {
+    const citeOrOficio = text.match(/(?:^|\n)\s*(?:CITE\s*[:.\-]?\s*|OF(?:ICIO)?\.?\s*(?:N(?:RO|O|°|º)?\.?\s*)?[:.\-]?\s*)(\d{1,8}\s*\/\s*\d{4})\b/i);
+    if (citeOrOficio) return citeOrOficio[1].replace(/\s+/g, '').toUpperCase();
+
+    const circular = text.match(/(?:^|\n)\s*(CARTA\s+CIRCULAR\s*\/\s*[A-Z0-9/\-]*\d{1,8}\s*\/\s*\d{4})\b/i);
+    return circular ? circular[1].replace(/\s+/g, '').toUpperCase() : null;
+}
+
+function extractDocumentHeading(text = '') {
+    const match = text.match(/(?:^|\n)\s*(CARTA\s+CIRCULAR|OFICIO|RESOLUCI[ÓO]N)\b/i);
+    return match ? match[1].replace(/\s+/g, ' ').toUpperCase() : null;
+}
+
+/** Agrupa páginas sin código; un encabezado distinto requiere revisión. */
 function buildAdjuntoGroups(pages, coverPageCount, numPages) {
     const groups = [];
 
@@ -882,10 +901,21 @@ function buildAdjuntoGroups(pages, coverPageCount, numPages) {
         if (!page?.match) continue;
 
         const continuation = [];
+        const startId = extractPageDocumentId(page.text);
         let next = pageIndex + 1;
         for (; next < numPages; next++) {
             const candidate = pages[next];
             if (!candidate || candidate.error || candidate.match || candidate.code) break;
+            const candidateId = extractPageDocumentId(candidate.text);
+            if (candidateId && candidateId !== startId) {
+                candidate.possibleNewDocument = candidateId;
+                break;
+            }
+            const headingWithoutId = !candidateId && extractDocumentHeading(candidate.text);
+            if (headingWithoutId) {
+                candidate.possibleNewDocument = `${headingWithoutId} sin identificador legible`;
+                break;
+            }
             if (candidate.text.trim()) continuation.push(candidate);
         }
 
@@ -1153,6 +1183,9 @@ export async function processFile(tiffPath, outputDir) {
     // ===================================================================
 
     const groups = buildAdjuntoGroups(pages, coverPageCount, numPages);
+    const paginasDocumentoNoIdentificado = pages
+        .filter(page => page?.possibleNewDocument)
+        .map(page => ({ pagina: page.pageNum, identificador: page.possibleNewDocument }));
     const ubicacion_adjuntos = [];
 
     if (groups.length > 0) {
@@ -1257,15 +1290,18 @@ export async function processFile(tiffPath, outputDir) {
         stream.write(coverTexts[ci] + '\n\n');
     }
 
-    // Paginas transcritas (solo las que tuvieron match)
-    for (const ubic of ubicacion_adjuntos) {
-        const pageText = pages[ubic.pagina - 1]?.text;
-        if (!pageText) continue;
-
-        stream.write('-'.repeat(60) + '\n');
-        stream.write(`PAGINA ${ubic.pagina} / ${numPages} - ${ubic.id_buscado} (confianza: ${(ubic.confianza * 100).toFixed(0)}%)\n`);
-        stream.write('-'.repeat(60) + '\n');
-        stream.write(pageText + '\n\n');
+    // Cada adjunto incluye la primera página y todas sus continuaciones.
+    for (const { page, continuation } of groups) {
+        for (const current of [page, ...continuation]) {
+            if (!current.text.trim()) continue;
+            const label = current === page
+                ? `${page.match.code} (confianza: ${(page.match.score * 100).toFixed(0)}%)`
+                : `CONTINUACION DE ${page.match.code}`;
+            stream.write('-'.repeat(60) + '\n');
+            stream.write(`PAGINA ${current.pageNum} / ${numPages} - ${label}\n`);
+            stream.write('-'.repeat(60) + '\n');
+            stream.write(current.text + '\n\n');
+        }
     }
 
     const elapsed = (Date.now() - startTime) / 1000;
@@ -1302,6 +1338,9 @@ export async function processFile(tiffPath, outputDir) {
     if (codigosNoVerificados.length > 0) {
         advertencias.push(`${codigosNoVerificados.length} codigo(s) R sin confirmacion visual exacta: ${codigosNoVerificados.map(item => item.esperado).join(', ')}`);
     }
+    if (paginasDocumentoNoIdentificado.length > 0) {
+        advertencias.push(`Posible documento nuevo sin codigo R en pagina(s): ${paginasDocumentoNoIdentificado.map(item => `${item.pagina} (${item.identificador})`).join(', ')}`);
+    }
     if (adjuntosRecuperadosPorAuditoria.length > 0) {
         advertencias.push(`${adjuntosRecuperadosPorAuditoria.length} codigo(s) recuperado(s) por auditoria Vision: ${adjuntosRecuperadosPorAuditoria.map(a => a.id_buscado).join(', ')}`);
     }
@@ -1321,6 +1360,7 @@ export async function processFile(tiffPath, outputDir) {
     const tieneErrores = Boolean(extractedData._error) ||
         adjuntosConError.length > 0 ||
         codigosNoVerificados.length > 0 ||
+        paginasDocumentoNoIdentificado.length > 0 ||
         adjuntosConMatchAproximado.length > 0 ||
         notFound.length > 0 ||
         errorCount > 0;
@@ -1349,9 +1389,10 @@ export async function processFile(tiffPath, outputDir) {
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
         codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined,
         codigos_no_verificados: codigosNoVerificados.length > 0 ? codigosNoVerificados : undefined,
+        paginas_documento_no_identificado: paginasDocumentoNoIdentificado.length > 0 ? paginasDocumentoNoIdentificado : undefined,
         _auditoria: {
             modelo: modelLabel(),
-            version_sistema: '2.3.0',
+            version_sistema: '2.3.1',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
