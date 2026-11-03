@@ -876,7 +876,7 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
                     cacheMode: 'off'
                 });
                 if (normalizeCodeForAudit(visualCode) === normalizeCodeForAudit(page.match.code)) {
-                    return { page, visualCode, additionalCode: null };
+                    return { page, visualCode, additionalCode: null, croppedCode: null };
                 }
 
                 // Una lectura discrepante no invalida por sí sola el OCR de la
@@ -888,28 +888,45 @@ async function verifyMatchedCodes(tiffPath, pages, numPages) {
                     reasoningEffort: additionalModel === config.model ? config.ocrReasoningEffort : config.idReasoningEffort,
                     cacheMode: 'off'
                 });
-                return { page, visualCode, additionalCode };
+                if (normalizeCodeForAudit(additionalCode) === normalizeCodeForAudit(page.match.code)) {
+                    return { page, visualCode, additionalCode, croppedCode: null };
+                }
+
+                // El codigo manuscrito de recepcion puede quedar demasiado
+                // pequeno al enviar la pagina completa. Releer la franja
+                // superior sin revelar al modelo el codigo esperado.
+                const topStrip = await cropRegion(pngBuffer, { left: 0, top: 0, width: 1, height: 0.25 });
+                const croppedCode = await identifyDocNumber(topStrip, page.pageNum, {
+                    model: config.idModel,
+                    reasoningEffort: config.idReasoningEffort,
+                    cacheMode: 'off'
+                });
+                return { page, visualCode, additionalCode, croppedCode };
             } catch (err) {
                 throwIfInsufficientQuota(err, `OpenAI verificacion codigo pagina ${page.pageNum}`);
-                return { page, visualCode: null, additionalCode: null };
+                return { page, visualCode: null, additionalCode: null, croppedCode: null };
             }
         },
-        onResult: ({ page, visualCode, additionalCode }) => {
+        onResult: ({ page, visualCode, additionalCode, croppedCode }) => {
             const expectedCode = normalizeCodeForAudit(page.match.code);
             const observedCode = normalizeCodeForAudit(visualCode);
             const additionalObserved = additionalCode ? normalizeCodeForAudit(additionalCode) : null;
-            page.codigo_verificado = expectedCode === observedCode || expectedCode === additionalObserved;
+            const croppedObserved = croppedCode ? normalizeCodeForAudit(croppedCode) : null;
+            page.codigo_verificado = expectedCode === observedCode || expectedCode === additionalObserved || expectedCode === croppedObserved;
             page.codigo_lectura_visual = observedCode || null;
             page.codigo_lectura_adicional = additionalObserved;
+            page.codigo_lectura_recorte = croppedObserved;
             if (page.codigo_verificado) {
-                if (expectedCode === additionalObserved && expectedCode !== observedCode) {
+                if (expectedCode === croppedObserved && expectedCode !== observedCode && expectedCode !== additionalObserved) {
+                    logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en recorte superior; lecturas de pagina completa ${observedCode || 'NO_ENCONTRADO'} y ${additionalObserved || 'NO_ENCONTRADO'}`);
+                } else if (expectedCode === additionalObserved && expectedCode !== observedCode) {
                     logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en lectura adicional; primera verificacion leyo ${observedCode || 'NO_ENCONTRADO'}`);
                 } else {
                     logger.success(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en imagen`);
                 }
             } else {
                 unverified.push({ pagina: page.pageNum, esperado: expectedCode, lectura_visual: observedCode || null });
-                logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: esperado ${expectedCode}, lecturas ${observedCode || 'NO_ENCONTRADO'} y ${additionalObserved || 'NO_ENCONTRADO'}; requiere revision`);
+                logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: esperado ${expectedCode}, lecturas ${observedCode || 'NO_ENCONTRADO'}, ${additionalObserved || 'NO_ENCONTRADO'} y recorte ${croppedObserved || 'NO_ENCONTRADO'}; requiere revision`);
             }
         }
     });
@@ -1067,6 +1084,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
         codigo_verificado: page.codigo_verificado === true,
         codigo_lectura_visual: page.codigo_lectura_visual,
         codigo_lectura_adicional: page.codigo_lectura_adicional || undefined,
+        codigo_lectura_recorte: page.codigo_lectura_recorte || undefined,
         paginas_continuacion: continuation.length > 0 ? continuation.length : undefined,
         confianza: match.score,
         recuperado_por_auditoria: page.rescuedByText || undefined,

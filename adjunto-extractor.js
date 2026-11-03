@@ -232,6 +232,7 @@ function cleanJuezCandidate(value = '') {
     if (!cleaned) return '';
     if (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(cleaned)) return '';
     if (cleaned.length < 4 || cleaned.length > 100) return '';
+    if (/\d/.test(cleaned)) return '';
 
     const visibleWords = cleaned
         .replace(/\[ILEGIBLE\]/gi, ' ')
@@ -241,10 +242,9 @@ function cleanJuezCandidate(value = '') {
         .trim();
 
     if (!visibleWords) return '';
-    if (/\d/.test(visibleWords)) return '';
     if (isLikelyNonNamePhrase(visibleWords)) return '';
 
-    const forbiddenKeywords = /\b(?:SECRETARI(?:A|O)|VOCAL|OFICIAL|AUXILIAR|TRIBUNAL|JUZGADO|BOLIVIA|PRESENTE|OFICIO|REFERENCIA|REF|EXP|NUREJ|CUD|ASFI|AUTORIDAD|DIRECTOR|PUBLIC[AO]|CIVIL|COMERCIAL|FAMILIA|PENAL|SOCIAL|TRABAJO|PARTIDO|INSTRUCCION|ADMINISTRATIV[AO]|COACTIV[AO]|FISCAL|TRIBUTARI[AO]|CAPITAL)\b/i;
+    const forbiddenKeywords = /\b(?:PAGINA|SEÑOR(?:A)?|SENOR(?:A)?|SECRETARI(?:A|O)|VOCAL|OFICIAL|AUXILIAR|TRIBUNAL|JUZGADO|BOLIVIA|PRESENTE|OFICIO|REFERENCIA|REF|EXP|NUREJ|CUD|ASFI|AUTORIDAD|DIRECTOR|PUBLIC[AO]|CIVIL|COMERCIAL|FAMILIA|PENAL|SOCIAL|TRABAJO|PARTIDO|INSTRUCCION|ADMINISTRATIV[AO]|COACTIV[AO]|FISCAL|TRIBUTARI[AO]|CAPITAL)\b/i;
     if (forbiddenKeywords.test(visibleWords)) return '';
 
     const tokens = visibleWords.split(/\s+/).filter(Boolean);
@@ -307,7 +307,8 @@ export function extractJuezFallback(ocrText) {
         const inlineCandidate = extractJuezCandidateFromLine(line);
         if (inlineCandidate) return inlineCandidate;
 
-        if (!/\bJUEZ(?:A)?\b/i.test(line)) {
+        // "SEÑOR JUEZ" en el encabezado es el destinatario, no una firma.
+        if (!/^JUEZ(?:A)?\b/i.test(line)) {
             continue;
         }
 
@@ -529,7 +530,59 @@ function sameFieldValue(a, b) {
     return canonical(a) === canonical(b);
 }
 
-/** Ignora títulos y variantes ordinales, sin equiparar personas o juzgados distintos. */
+/** Los espacios de OCR dentro de un NUREJ/CUD no cambian sus caracteres. */
+function sameProcessNumber(a, b) {
+    const canonical = value => String(value).replace(/\s+/g, '').toUpperCase();
+    return Boolean(canonical(a)) && canonical(a) === canonical(b);
+}
+
+/** La puntuación de una sigla comercial no cambia la razón social. */
+function sameCorporateName(a, b) {
+    const canonical = value => String(value)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '');
+    return Boolean(canonical(a)) && canonical(a) === canonical(b);
+}
+
+function courtNumber(value) {
+    const text = String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+    const digit = text.match(/\b([1-9]|1\d|20)(?!\d)\s*(?:[º°ª]|RO\b|DO\b|TO\b|VO\b)?/);
+    if (digit) return Number(digit[1]);
+    const ordinals = [
+        'PRIMERO', 'SEGUNDO', 'TERCERO', 'CUARTO', 'QUINTO', 'SEXTO',
+        'SEPTIMO', 'OCTAVO', 'NOVENO', 'DECIMO', 'UNDECIMO', 'DUODECIMO',
+        'DECIMO TERCERO', 'DECIMO CUARTO', 'DECIMO QUINTO', 'DECIMO SEXTO',
+        'DECIMO SEPTIMO', 'DECIMO OCTAVO', 'DECIMO NOVENO', 'VIGESIMO'
+    ];
+    const found = ordinals
+        .map((ordinal, index) => ({ ordinal, number: index + 1 }))
+        .sort((left, right) => right.ordinal.length - left.ordinal.length)
+        .find(({ ordinal }) => new RegExp(`\\b${ordinal}\\b`).test(text));
+    return found?.number || null;
+}
+
+function courtAreas(value) {
+    const text = String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+    return ['CIVIL', 'COMERCIAL', 'FAMILIA', 'PENAL', 'TRABAJO', 'SOCIAL']
+        .filter(area => new RegExp(`\\b${area}\\b`).test(text));
+}
+
+function sameJudgePronunciation(a, b) {
+    const tokens = value => String(value)
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase().replace(/^(?:ABG|ABOG|DR|DRA|LIC)\.?\s+/, '')
+        .match(/[A-ZÑ]+/g) || [];
+    const left = tokens(a);
+    const right = tokens(b);
+    if (left.length < 3 || left.length !== right.length) return false;
+    if (left.slice(1).some((part, index) => part !== right[index + 1])) return false;
+    const phonetic = name => name.replace(/C(?=[EI])/g, 'S').replace(/(.)\1+/g, '$1');
+    return phonetic(left[0]) === phonetic(right[0]);
+}
+
+/** Compara grafías de una autoridad; un ordinal distinto sigue siendo conflicto. */
 function sameAuthorityValue(field, a, b) {
     const canonical = value => {
         let text = String(value)
@@ -546,7 +599,19 @@ function sameAuthorityValue(field, a, b) {
         }
         return text.replace(/[^A-Z0-9Ñ]+/g, ' ').trim().replace(/\s+/g, ' ');
     };
-    return canonical(a) === canonical(b);
+    if (canonical(a) === canonical(b)) return true;
+    if (field === 'juez') return sameJudgePronunciation(a, b);
+    if (field !== 'juzgado') return false;
+    const leftNumber = courtNumber(a);
+    const rightNumber = courtNumber(b);
+    if (leftNumber && rightNumber && leftNumber !== rightNumber) return false;
+    const leftAreas = courtAreas(a);
+    const rightAreas = courtAreas(b);
+    const sameArea = leftAreas.length > 0 && rightAreas.length > 0 &&
+        leftAreas.some(area => rightAreas.includes(area));
+    if (!sameArea) return false;
+    if (!leftNumber && !rightNumber) return /\[ILEGIBLE\]/i.test(a) || /\[ILEGIBLE\]/i.test(b);
+    return true;
 }
 
 /** Lleva un monto a "entero.decimales" ("Bs. 1.000,00", "1000" y "1.000.oo" coinciden). */
@@ -610,7 +675,8 @@ function mergeDemandados(demandados) {
             continue;
         }
         for (const key of Object.keys(candidate)) {
-            const same = key === 'monto' ? sameAmount : sameFieldValue;
+            const same = key === 'monto' ? sameAmount
+                : key === 'razon_social' ? sameCorporateName : sameFieldValue;
             if (!existing[key]) existing[key] = candidate[key];
             else if (candidate[key] && !same(existing[key], candidate[key])) {
                 conflictingFields.add(`demandados.${key}`);
@@ -791,7 +857,12 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
                 if (!merged[key]) merged[key] = result[key];
                 else if (!sameFieldValue(merged[key], result[key])) {
                     if (sameAuthorityValue(key, merged[key], result[key])) {
-                        differentValues.push(`${key} "${result[key]}" en fragmento ${index + 1}; se conserva "${merged[key]}"`);
+                        if (key === 'juzgado' && !courtNumber(merged[key]) && courtNumber(result[key])) {
+                            differentValues.push(`${key} "${merged[key]}" incompleto; se usa "${result[key]}" del fragmento ${index + 1}`);
+                            merged[key] = result[key];
+                        } else {
+                            differentValues.push(`${key} "${result[key]}" en fragmento ${index + 1}; se conserva "${merged[key]}"`);
+                        }
                     } else {
                         conflictingFields.add(key);
                     }
@@ -812,7 +883,9 @@ export async function extractAdjuntoFields(ocrText, { primaryText } = {}) {
                 }
                 if (result[detailKey]) {
                     if (!merged[detailKey]) merged[detailKey] = result[detailKey];
-                    else if (!sameFieldValue(merged[detailKey], result[detailKey])) {
+                    else if (!(detailKey === 'nro_documento_respaldo'
+                        ? sameProcessNumber(merged[detailKey], result[detailKey])
+                        : sameFieldValue(merged[detailKey], result[detailKey]))) {
                         conflictingFields.add(detailKey);
                     }
                 }

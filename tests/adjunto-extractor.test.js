@@ -268,6 +268,93 @@ describe('extraccion de adjuntos largos', () => {
         assert.match(result._error, /juez/);
         assert.match(result._error, /juzgado/);
     });
+
+    it('reconoce el mismo juzgado aunque el OCR omita palabras o use el ordinal escrito', async () => {
+        const principal = 'PAGINA R-241594\nJUZGADO PÚBLICO CIVIL Y COMERCIAL 10º\n';
+        const continuacion = 'ACTUACION DEL MISMO PROCESO\nJuzgado Púbico Civil y Comercial Décimo de la capital (Oruro-Bolivia)\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: {
+            content: JSON.stringify(++calls === 1
+                ? { juzgado: 'JUZGADO PÚBLICO CIVIL Y COMERCIAL 10º', demandados: [] }
+                : { juzgado: 'Púbico Civil y Comercial Décimo de la capital (Oruro-Bolivia)', demandados: [] })
+        } }] });
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+        assert.equal(result._error, undefined);
+        assert.equal(result.juzgado, 'JUZGADO PÚBLICO CIVIL Y COMERCIAL 10º');
+    });
+
+    it('completa el ordinal del juzgado desde otra pagina cuando la principal dice ILEGIBLE', async () => {
+        const principal = 'PAGINA R-242896\nJUZGADO PÚBLICO CIVIL Y COMERCIAL [ILEGIBLE]\n';
+        const continuacion = 'ACTUACION DEL MISMO PROCESO\nJUZGADO PÚBLICO CIVIL Y COMERCIAL 7º\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: {
+            content: JSON.stringify({ juzgado: ++calls === 1
+                ? 'JUZGADO PÚBLICO CIVIL Y COMERCIAL [ILEGIBLE]'
+                : 'JUZGADO PÚBLICO CIVIL Y COMERCIAL 7º', demandados: [] })
+        } }] });
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+        assert.equal(result._error, undefined);
+        assert.equal(result.juzgado, 'JUZGADO PÚBLICO CIVIL Y COMERCIAL 7º');
+        assert.equal(result._advertencia_valores_distintos.length, 1);
+    });
+
+    it('conserva la grafia principal del juez cuando el nombre suena igual y ambos apellidos coinciden', async () => {
+        const principal = 'PAGINA R-242838\nJUEZ ROSSIO LIMA GUTIERREZ\n';
+        const continuacion = 'ACTUACION DEL MISMO PROCESO\nJUEZ Rocío Lima Gutiérrez\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: {
+            content: JSON.stringify({ juez: ++calls === 1 ? 'ROSSIO LIMA GUTIERREZ' : 'Rocío Lima Gutiérrez', demandados: [] })
+        } }] });
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+        assert.equal(result._error, undefined);
+        assert.equal(result.juez, 'ROSSIO LIMA GUTIERREZ');
+        assert.equal(result._advertencia_valores_distintos.length, 1);
+    });
+
+    it('no confunde la puntuacion de una sigla comercial con otra empresa', async () => {
+        const principal = 'PAGINA R-245538\nNIT 19991012\nCENTRO PEDAGOGICO PARTICULAR A.M.A.U.T.A.\n';
+        const continuacion = 'MISMO PROCESO\nCENTRO PEDAGÓGICO PARTICULAR AMAUTA NIT 19991012\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: {
+            content: JSON.stringify({ demandados: [{
+                razon_social: ++calls === 1 ? 'CENTRO PEDAGOGICO PARTICULAR A.M.A.U.T.A.' : 'CENTRO PEDAGÓGICO PARTICULAR AMAUTA',
+                nro_documento: '19991012', tipo_documento: 'NIT'
+            }] })
+        } }] });
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+        assert.equal(result._error, undefined);
+        assert.equal(result.demandados.length, 1);
+        assert.equal(result.demandados[0].razon_social, 'CENTRO PEDAGOGICO PARTICULAR A.M.A.U.T.A.');
+    });
+
+    it('conserva el error cuando un mismo grupo contiene dos NUREJ distintos', async () => {
+        const principal = 'PAGINA R-242332\nNUREJ 601103012501151\n';
+        const continuacion = 'ACTUACION\nNUREJ 601102012402274\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: {
+            content: JSON.stringify({ tipo_documento_respaldo: 'NUREJ', nro_documento_respaldo: ++calls === 1 ? '601103012501151' : '601102012402274', demandados: [] })
+        } }] });
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+        assert.match(result._error, /nro_documento_respaldo/);
+    });
+
+    it('acepta el mismo NUREJ cuando OCR separa la letra final', async () => {
+        const principal = 'PAGINA R-242332\nNUREJ 201214058E\n';
+        const continuacion = 'ACTUACION\nNUREJ 201214058 E\n';
+        let calls = 0;
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: {
+            content: JSON.stringify({ tipo_documento_respaldo: 'NUREJ', nro_documento_respaldo: ++calls === 1 ? '201214058E' : '201214058 E', demandados: [] })
+        } }] });
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+        assert.equal(result._error, undefined);
+        assert.equal(result.nro_documento_respaldo, '201214058E');
+    });
 });
 
 describe('tipo_proceso handling', () => {
@@ -382,5 +469,14 @@ describe('juez handling', () => {
         ].join('\n');
 
         assert.equal(extractJuezFallback(text), '');
+    });
+
+    it('no toma el sello previo a SEÑOR JUEZ como nombre del juez', () => {
+        const text = 'No. TRÁMITE\nOR [ILEGIBLE] OR\n\nSEÑOR JUEZ PÚBLICO CIVIL Y COMERCIAL 11º DE LA CAPITAL\n';
+        assert.equal(extractJuezFallback(text), '');
+    });
+
+    it('no toma I.- Señor Juez del encabezado como nombre del juez', () => {
+        assert.equal(extractJuezFallback('I.- Señor JUEZ PÚBLICO CIVIL Y COMERCIAL 5º\n'), '');
     });
 });
