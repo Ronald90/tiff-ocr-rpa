@@ -26,6 +26,9 @@ const config = {
     maxImagePatches: parseInt(process.env.MAX_IMAGE_PATCHES, 10),
     maxFileSizeMB: parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 500,
     timeoutPerPageMs: parseInt(process.env.TIMEOUT_PER_PAGE_MS, 10) || 180000,
+    adjuntoChunkChars: process.env.ADJUNTO_CHUNK_CHARS
+        ? parseInt(process.env.ADJUNTO_CHUNK_CHARS, 10)
+        : 24000,
 
     // Carpetas
     inputDir: path.resolve(process.env.INPUT_DIR || './input'),
@@ -78,6 +81,10 @@ for (const [key, value] of [
     ['OPENAI_MAX_IN_FLIGHT', config.openaiMaxInFlight]
 ]) {
     if (!Number.isInteger(value) || value < 1) throw new Error(`${key} debe ser un entero positivo`);
+}
+
+if (!Number.isInteger(config.adjuntoChunkChars) || config.adjuntoChunkChars < 1000) {
+    throw new Error('ADJUNTO_CHUNK_CHARS debe ser un entero de al menos 1000');
 }
 
 export default config;

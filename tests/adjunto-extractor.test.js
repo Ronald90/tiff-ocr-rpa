@@ -1,11 +1,85 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import openai from '../openai-client.js';
+import config from '../config.js';
 import {
+    extractAdjuntoFields,
     extractJuezFallback,
     normalizeTipoProcesoValue,
     extractExplicitTipoProcesoFallback,
     normalizeJuezValue
 } from '../adjunto-extractor.js';
+
+const originalCreate = openai.chat.completions.create;
+const originalChunkChars = config.adjuntoChunkChars;
+afterEach(() => {
+    openai.chat.completions.create = originalCreate;
+    config.adjuntoChunkChars = originalChunkChars;
+});
+
+function longAdjuntoText() {
+    return `INICIO_UNICO\n${'Fila de tabla sin datos individuales.\n'.repeat(800)}FINAL_UNICO\n`;
+}
+
+describe('extraccion de adjuntos largos', () => {
+    it('envia todos los fragmentos y une demandados del comienzo y del final', async () => {
+        config.adjuntoChunkChars = 24000;
+        const sent = [];
+        openai.chat.completions.create = async request => {
+            assert.equal(request.response_format?.json_schema?.name, 'adjunto_extraction');
+            const content = request.messages[1].content;
+            sent.push(content);
+            const nombre = content.includes('INICIO_UNICO') ? 'Primero' :
+                content.includes('FINAL_UNICO') ? 'Ultimo' : '';
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+                nro_cite: 'CITE 100/2025',
+                demandados: nombre ? [{ nombre, nro_documento: nombre === 'Primero' ? '1' : '2' }] : []
+            }) } }] };
+        };
+
+        const result = await extractAdjuntoFields(longAdjuntoText());
+
+        assert.ok(sent.length > 1);
+        assert.equal(sent.filter(value => value.includes('INICIO_UNICO')).length, 1);
+        assert.equal(sent.filter(value => value.includes('FINAL_UNICO')).length, 1);
+        assert.ok(sent.every(value => !value.includes('texto restante omitido')));
+        assert.deepEqual(result.demandados.map(item => item.nombre), ['Primero', 'Ultimo']);
+        assert.equal(result._fragmentos_extraccion, sent.length);
+        assert.equal(result._error, undefined);
+    });
+
+    it('marca error si falla un fragmento intermedio', async () => {
+        config.adjuntoChunkChars = 24000;
+        let calls = 0;
+        openai.chat.completions.create = async () => {
+            calls++;
+            if (calls === 2) throw Object.assign(new Error('400 Invalid request'), { status: 400 });
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ demandados: [] }) } }] };
+        };
+
+        const result = await extractAdjuntoFields(longAdjuntoText());
+
+        assert.equal(calls, 2);
+        assert.match(result._error, /Fragmento 2\/\d+: 400 Invalid request/);
+    });
+
+    it('marca revision si los fragmentos contradicen un campo del documento', async () => {
+        config.adjuntoChunkChars = 24000;
+        let calls = 0;
+        openai.chat.completions.create = async () => {
+            calls++;
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+                nro_cite: calls === 1 ? '100/2025' : '101/2025',
+                demandados: []
+            }) } }] };
+        };
+
+        const result = await extractAdjuntoFields(longAdjuntoText());
+
+        assert.equal(calls, 2);
+        assert.match(result._error, /Campos contradictorios entre fragmentos: nro_cite/);
+    });
+});
 
 describe('tipo_proceso handling', () => {
     it('limpia el valor devuelto por el modelo sin clasificarlo', () => {

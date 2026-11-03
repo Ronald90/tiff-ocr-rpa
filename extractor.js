@@ -6,7 +6,6 @@ import openai from './openai-client.js';
 import { isRetryableOpenAIError, throwIfInsufficientQuota, TruncatedOutputError } from './openai-errors.js';
 import { sleep, renderPrompt, modelForAttempt, safeJsonParse } from './utils.js';
 
-const MAX_EXTRACT_CHARS = 24000;
 const CARATULA_MAX_OUTPUT_TOKENS = 6000;
 
 const EMPTY_RESULT = {
@@ -154,14 +153,10 @@ function normalizeResult(data, ocrText = '') {
 export async function extractFields(ocrText) {
     if (!ocrText || ocrText.trim().length < 50) {
         logger.warn('[EXTRACT] Texto de caratula demasiado corto para extraer campos');
-        return { ...EMPTY_RESULT };
+        return { ...EMPTY_RESULT, _error: 'Texto de caratula demasiado corto para extraer campos' };
     }
 
-    const truncated = ocrText.length > MAX_EXTRACT_CHARS
-        ? ocrText.substring(0, MAX_EXTRACT_CHARS) + '\n\n[... texto restante omitido ...]'
-        : ocrText;
-
-    logger.info(`[EXTRACT] Procesando caratula (${truncated.length} chars de ${ocrText.length} total)`);
+    logger.info(`[EXTRACT] Procesando caratula completa (${ocrText.length} chars)`);
 
     let maxTokens = CARATULA_MAX_OUTPUT_TOKENS;
 
@@ -181,7 +176,7 @@ export async function extractFields(ocrText) {
                     },
                     {
                         role: 'user',
-                        content: renderPrompt(EXTRACTION_USER_PROMPT, { text: truncated })
+                        content: renderPrompt(EXTRACTION_USER_PROMPT, { text: ocrText })
                     }
                 ]
             });

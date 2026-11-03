@@ -485,35 +485,45 @@ function normalizeAdjuntoResult(data, ocrText = '') {
     return result;
 }
 
-/**
- * Extrae campos estructurados del texto transcrito de un documento adjunto.
- * Identifica cite, demandados, montos, juez, juzgado, etc.
- * @param {string} ocrText - Texto transcrito del documento adjunto
- * @returns {Promise<object>} - Campos extraidos
- */
-export async function extractAdjuntoFields(ocrText) {
-    if (!ocrText || ocrText.trim().length < 50) {
-        logger.warn('[ADJUNTO-EXTRACT] Texto demasiado corto para extraer campos');
-        return { ...ADJUNTO_EMPTY };
+/** Divide el texto sin descartar caracteres y prioriza límites de página o línea. */
+function splitAdjuntoText(ocrText) {
+    const chunks = [];
+    let start = 0;
+    const chunkChars = config.adjuntoChunkChars;
+
+    while (start < ocrText.length) {
+        let end = Math.min(start + chunkChars, ocrText.length);
+        if (end < ocrText.length) {
+            const pageEnd = ocrText.lastIndexOf('\n\n', end);
+            const lineEnd = ocrText.lastIndexOf('\n', end);
+            if (pageEnd >= start + chunkChars / 2) {
+                end = pageEnd + 2;
+            } else if (lineEnd > start) {
+                end = lineEnd + 1;
+            } else {
+                // Una linea excepcionalmente larga se envia entera; nunca se
+                // descarta ni se corta una fila en medio.
+                const nextLineEnd = ocrText.indexOf('\n', end);
+                end = nextLineEnd === -1 ? ocrText.length : nextLineEnd + 1;
+            }
+        }
+        chunks.push(ocrText.slice(start, end));
+        start = end;
     }
 
-    // Limitar texto sin cortar demasiado los datos de demandados o cuentas.
-    // Tablas con 50+ contribuyentes pueden generar texto extenso.
-    const maxChars = 24000;
-    const truncated = ocrText.length > maxChars
-        ? ocrText.substring(0, maxChars) + '\n\n[... texto restante omitido ...]'
-        : ocrText;
-
-    logger.info(`[ADJUNTO-EXTRACT] Extrayendo campos del adjunto (${truncated.length} chars)...`);
-
-    // Advertencia de truncamiento para trazabilidad
-    const truncationWarning = ocrText.length > maxChars
-        ? `Texto original de ${ocrText.length} caracteres fue truncado a ${maxChars}. Algunos demandados podrían no haberse extraído.`
-        : null;
-
-    if (truncationWarning) {
-        logger.warn(`[ADJUNTO-EXTRACT] ⚠️ TEXTO TRUNCADO: ${truncationWarning}`);
+    if (chunks.length > 1 && chunks.at(-1).trim().length < 50) {
+        chunks[chunks.length - 2] += chunks.pop();
     }
+
+    return chunks;
+}
+
+async function extractAdjuntoChunk(chunk, index, total) {
+    logger.info(`[ADJUNTO-EXTRACT] Extrayendo fragmento ${index + 1}/${total} (${chunk.length} chars)...`);
+
+    const chunkInstruction = total > 1
+        ? `\n\nEste es el fragmento ${index + 1} de ${total} del mismo adjunto. Extrae todos los demandados visibles en ESTE fragmento. Para campos no visibles aqui, devuelve vacio. No inventes datos de otros fragmentos.`
+        : '';
 
     let maxTokens = ADJUNTO_MAX_OUTPUT_TOKENS;
 
@@ -533,7 +543,7 @@ export async function extractAdjuntoFields(ocrText) {
                     },
                     {
                         role: 'user',
-                        content: renderPrompt(ADJUNTO_USER_PROMPT, { text: truncated })
+                        content: renderPrompt(ADJUNTO_USER_PROMPT, { text: chunk }) + chunkInstruction
                     }
                 ]
             });
@@ -553,12 +563,9 @@ export async function extractAdjuntoFields(ocrText) {
                 throw new Error('JSON invalido devuelto por el modelo');
             }
 
-            const normalized = normalizeAdjuntoResult(parsed, truncated);
-            if (truncationWarning) {
-                normalized._advertencia_truncado = truncationWarning;
-            }
+            const normalized = normalizeAdjuntoResult(parsed, chunk);
             if (!normalized.nro_cite) {
-                const fallbackNroCite = extractNroCiteFallback(truncated);
+                const fallbackNroCite = extractNroCiteFallback(chunk);
                 if (fallbackNroCite) {
                     normalized.nro_cite = fallbackNroCite;
                     logger.info(`[ADJUNTO-EXTRACT] nro_cite recuperado por regex: ${fallbackNroCite}`);
@@ -604,4 +611,40 @@ export async function extractAdjuntoFields(ocrText) {
 
     // Fallback defensivo: si maxRetries es 0 o el loop no devuelve nada
     return { ...ADJUNTO_EMPTY, _error: 'Sin intentos disponibles' };
+}
+
+/** Extrae cada fragmento completo y une los registros sin perder filas. */
+export async function extractAdjuntoFields(ocrText) {
+    if (!ocrText || ocrText.trim().length < 50) {
+        logger.warn('[ADJUNTO-EXTRACT] Texto demasiado corto para extraer campos');
+        return { ...ADJUNTO_EMPTY, _error: 'Texto del adjunto demasiado corto para extraer campos' };
+    }
+
+    const chunks = splitAdjuntoText(ocrText);
+    if (chunks.join('') !== ocrText) {
+        return { ...ADJUNTO_EMPTY, _error: 'La division del adjunto no conservo todo el texto' };
+    }
+
+    const merged = { ...ADJUNTO_EMPTY, demandados: [] };
+    const conflictingFields = new Set();
+
+    for (let index = 0; index < chunks.length; index++) {
+        const result = await extractAdjuntoChunk(chunks[index], index, chunks.length);
+        if (result._error) {
+            return { ...ADJUNTO_EMPTY, _error: `Fragmento ${index + 1}/${chunks.length}: ${result._error}` };
+        }
+
+        merged.demandados.push(...result.demandados);
+        for (const key of Object.keys(ADJUNTO_EMPTY)) {
+            if (key === 'demandados' || !result[key]) continue;
+            if (!merged[key]) merged[key] = result[key];
+            else if (merged[key] !== result[key]) conflictingFields.add(key);
+        }
+    }
+
+    if (conflictingFields.size > 0) {
+        merged._error = `Campos contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
+    }
+    if (chunks.length > 1) merged._fragmentos_extraccion = chunks.length;
+    return merged;
 }

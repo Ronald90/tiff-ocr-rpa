@@ -1,6 +1,29 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectEsSirefo } from '../extractor.js';
+import openai from '../openai-client.js';
+import { detectEsSirefo, extractFields } from '../extractor.js';
+
+const originalCreate = openai.chat.completions.create;
+afterEach(() => { openai.chat.completions.create = originalCreate; });
+
+describe('extractFields', () => {
+    it('envia la caratula completa aunque supere 24000 caracteres', async () => {
+        const cover = `INICIO_CARATULA\n${'Texto de caratula.\n'.repeat(1500)}FINAL_CARATULA`;
+        let sent = '';
+        openai.chat.completions.create = async request => {
+            sent = request.messages[1].content;
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ documento: 'CARTA CIRCULAR' }) } }] };
+        };
+
+        const data = await extractFields(cover);
+
+        assert.ok(cover.length > 24000);
+        assert.ok(sent.includes('INICIO_CARATULA'));
+        assert.ok(sent.includes('FINAL_CARATULA'));
+        assert.equal(data.documento, 'CARTA CIRCULAR');
+        assert.equal(data._error, undefined);
+    });
+});
 
 describe('detectEsSirefo', () => {
     it('devuelve false para menciones normativas genericas sin SIREFO explicito', () => {

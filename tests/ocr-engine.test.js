@@ -50,8 +50,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Instala un OpenAI falso. `pages[n]` define la pagina n: `text` (OCR), `ocr`
- * (respuesta OCR por intento), `id` (identificacion libre) y `targeted`
- * (identificacion dirigida).
+ * (respuesta OCR por intento), `id` (identificacion libre), `verify` (segunda
+ * lectura visual) y `targeted` (identificacion dirigida).
  */
 function mockOpenAI(adjuntos, pages) {
     const calls = { ocr: [], id: [], targeted: [], extract: 0, maxActiveOcr: 0, maxActiveExtract: 0 };
@@ -62,6 +62,7 @@ function mockOpenAI(adjuntos, pages) {
         const formatName = request.response_format?.json_schema?.name;
         if (formatName === 'caratula_extraction') {
             assert.equal(request.model, config.textModel);
+            if (adjuntos === null) throw Object.assign(new Error('400 Invalid request'), { status: 400 });
             return completion(JSON.stringify({ documentos_adjuntos: adjuntos }));
         }
         if (formatName === 'adjunto_extraction') {
@@ -90,10 +91,13 @@ function mockOpenAI(adjuntos, pages) {
             return completion(spec.text ?? '');
         }
         if (system === SYSTEM.id) {
-            assert.equal(request.model, config.idModel);
+            assert.ok([config.idModel, config.model].includes(request.model));
             calls.id.push(page);
             await delay(10);
-            return completion(spec.id ?? 'NO_ENCONTRADO');
+            const codeInText = spec.text?.match(/R-\d{5,7}/)?.[0];
+            return completion(request.model === config.model
+                ? (spec.verify ?? spec.id ?? codeInText ?? 'NO_ENCONTRADO')
+                : (spec.id ?? codeInText ?? 'NO_ENCONTRADO'));
         }
         if (system === SYSTEM.idExpected) {
             assert.equal(request.model, config.idModel);
@@ -117,6 +121,16 @@ async function run(tiffPath = fixture) {
 }
 
 describe('processFile', () => {
+    it('marca error si la extraccion de caratula falla y no acepta una lista vacia', async () => {
+        mockOpenAI(null, { 1: { text: COVER } });
+
+        const data = (await run()).extractedData;
+
+        assert.equal(data.tiene_errores, true);
+        assert.equal(data.estado_procesamiento, 'error');
+        assert.match(data.advertencias.join(' '), /Extraccion de caratula incompleta/);
+    });
+
     it('acepta SIREFO de una pagina con adjunto sin R y conserva la referencia; otros faltantes siguen siendo errores', async () => {
         const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-ocr-sirefo-'));
         const onePageTiff = path.join(fixtureDir, 'one-page.tiff');
@@ -172,8 +186,10 @@ describe('processFile', () => {
             [2, 'R-12345', 1],
             [4, 'R-54321', 1]
         ]);
-        // El sello leido en el texto basta: la imagen no se consulta para 2 y 4.
-        assert.equal(calls.id.includes(2) || calls.id.includes(4), false);
+        // La ubicación sale del texto; la segunda lectura confirma cada código en imagen.
+        assert.equal(calls.id.filter(page => page === 2).length, 1);
+        assert.equal(calls.id.filter(page => page === 4).length, 1);
+        assert.ok(data.ubicacion_adjuntos.every(a => a.codigo_verificado));
         assert.deepEqual(calls.targeted, []);
         // La pagina 6 tiene otro codigo y cierra el ultimo adjunto.
         assert.equal(ocrPages.has(9) || ocrPages.has(10), false);
@@ -187,7 +203,7 @@ describe('processFile', () => {
         const calls = mockOpenAI(['R-12345', 'R-54321'], {
             1: { text: COVER },
             2: { text: OFICIO, id: 'R-12345' },
-            3: { text: OFICIO, targeted: 'R-54321' }
+            3: { text: OFICIO, targeted: 'R-54321', verify: 'R-54321' }
         });
 
         const result = await run();
@@ -217,6 +233,22 @@ describe('processFile', () => {
 
         assert.deepEqual(data.ubicacion_adjuntos.map(a => a.id_buscado), ['R-12345', 'R-54321']);
         assert.equal(data.codigos_no_encontrados, undefined);
+    });
+
+    it('requiere revision cuando la segunda lectura visual no confirma todos los digitos', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}`, id: 'R-12346' }
+        });
+
+        const data = (await run()).extractedData;
+
+        assert.equal(data.tiene_errores, true);
+        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.deepEqual(data.codigos_no_verificados, [
+            { pagina: 2, esperado: 'R-12345', lectura_visual: 'R-12346' }
+        ]);
+        assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
     });
 
     it('marca errores sin reintentar una solicitud invalida y reintenta un OCR truncado con mas tokens', async () => {

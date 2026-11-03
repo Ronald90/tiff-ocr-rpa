@@ -4,7 +4,7 @@ Sistema RPA para procesar archivos TIFF multipágina mediante Vision con el mode
 
 Configuración de la plantilla: `gpt-6-astra` transcribe las imágenes y `gpt-6.1-terra` identifica los códigos y extrae los campos JSON. La transcripción usa `detail: "original"` para conservar el texto pequeño. Cada etapa se puede configurar por separado en `.env`.
 
-Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto.
+Cada página se transcribe una sola vez. El código R- de cada adjunto se busca primero en ese texto (sello con prefijo R o dígitos exactos junto al sello ASFI); solo cuando el texto no lo muestra con claridad se consulta la imagen. Al ubicar todos los códigos se dejan de leer páginas, salvo las continuaciones del último adjunto. Cada código ubicado se contrasta después con una segunda lectura de la imagen. Si los dígitos difieren o no se leen, el TIFF requiere revisión.
 
 ## Requisitos
 
@@ -39,6 +39,17 @@ Coloca archivos `.tif`/`.tiff` en la carpeta `input/`. El sistema los procesa au
 Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
 TIFF termina con errores, solo se conserva el original en `error/`.
+Los adjuntos largos se dividen en fragmentos sin descartar texto. La carátula
+también se envía completa. Si falla la extracción de alguna parte o se detectan
+valores contradictorios entre fragmentos,
+el TIFF se envía a `error/` y no se publican TXT ni JSON.
+
+El JSON aceptado incluye `estado_procesamiento: "completo"`. Los estados
+`"requiere_revision"` (por ejemplo, un código R que no coincide en la segunda
+lectura) y `"error"` (por ejemplo, un código faltante o una extracción fallida)
+solo se usan internamente para decidir el destino del TIFF. Una segunda lectura
+automática reduce errores, pero no garantiza reconocimiento del 100 %; para esa
+exigencia hace falta comparar con el original y revisar los casos dudosos.
 
 En un TIFF SIREFO de una sola página, una referencia a instrucciones adjuntas
 sin código R se conserva en `documentos_adjuntos` y se avisa en `advertencias`;
@@ -80,6 +91,8 @@ Un código R mencionado y no localizado sigue siendo un error.
 | `para_conocimiento` | array | Entidades para conocimiento y cumplimiento |
 | `documentos_adjuntos` | array | Documentos adjuntos listados |
 | `modificaciones` | array | Menciones de modificaciones normativas |
+| `estado_procesamiento` | string | `completo`, `requiere_revision` o `error`; solo `completo` se publica en `output/` en modo RPA |
+| `ubicacion_adjuntos[].codigo_verificado` | boolean | Indica si una segunda lectura visual coincidió dígito por dígito con el código R esperado |
 
 ## Configuración (.env)
 
@@ -102,6 +115,7 @@ Un código R mencionado y no localizado sigue siendo un error.
 | `MAX_RETRIES` | `5` | Intentos por llamada ante errores transitorios (red, timeout, 429, 5xx); un 400/401/403/404/422 no se reintenta |
 | `MAX_IMAGE_WIDTH` | `2048` | Ancho máximo real de cada página enviada al modelo; la plantilla usa `6000` |
 | `MAX_IMAGE_PATCHES` | — | Límite de parches de 32 px para evitar rechazos con `detail: original`; la plantilla usa `28000` |
+| `ADJUNTO_CHUNK_CHARS` | `24000` | Tamaño aproximado de cada fragmento de texto de un adjunto largo; no se descarta texto |
 | `MAX_FILE_SIZE_MB` | `500` | Tamaño máximo de archivo |
 | `TIMEOUT_PER_PAGE_MS` | `180000` | Timeout por página (3 min) |
 | `WATCH_INTERVAL_MS` | `5000` | Intervalo de polling del watcher |

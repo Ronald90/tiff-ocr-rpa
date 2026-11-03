@@ -432,8 +432,7 @@ function normalizeIdentifiedCode(raw) {
  * @param {number} pageNum - Número de página
  * @returns {Promise<string|null>} - Código normalizado o null
  */
-async function identifyDocNumber(pngBuffer, pageNum) {
-    const model = config.idModel;
+async function identifyDocNumber(pngBuffer, pageNum, { model = config.idModel, reasoningEffort = config.idReasoningEffort } = {}) {
     const imgBase64 = pngBuffer.toString('base64');
 
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
@@ -461,7 +460,7 @@ async function identifyDocNumber(pngBuffer, pageNum) {
             const response = await openai.chat.completions.create({
                 model,
                 messages,
-                reasoning_effort: config.idReasoningEffort,
+                reasoning_effort: reasoningEffort,
                 max_completion_tokens: config.idMaxOutputTokens
             }, { signal: controller.signal });
 
@@ -474,7 +473,7 @@ async function identifyDocNumber(pngBuffer, pageNum) {
                     const fallbackResponse = await openai.chat.completions.create({
                         model,
                         messages,
-                        reasoning_effort: config.idReasoningEffort,
+                        reasoning_effort: reasoningEffort,
                         max_completion_tokens: config.idMaxOutputTokens
                     }, { signal: controller.signal });
                     result = (fallbackResponse.choices?.[0]?.message?.content ?? '').trim();
@@ -827,6 +826,50 @@ function reconcileMatches(pages, adjuntos, matchedCodes, numPages) {
     }
 }
 
+/** Contrasta cada código asignado con una nueva lectura visual exacta. */
+async function verifyMatchedCodes(tiffPath, pages, numPages) {
+    const matchedPages = pages.filter(page => page?.match);
+    const unverified = [];
+    if (matchedPages.length === 0) return unverified;
+
+    logger.info(`[AUDIT] Verificando digito por digito ${matchedPages.length} codigo(s) en la imagen original...`);
+    await runInOrder({
+        from: 0,
+        to: matchedPages.length,
+        concurrency: config.concurrency,
+        work: async index => {
+            const page = matchedPages[index];
+            try {
+                const pngBuffer = await extractPageAsPng(tiffPath, page.pageIndex);
+                // Si el primer hallazgo vino del modelo de ID, verificar con el
+                // modelo OCR; si vino del OCR, verificar con el modelo de ID.
+                const verifierModel = page.codeSource === 'texto' ? config.idModel : config.model;
+                const visualCode = await identifyDocNumber(pngBuffer, page.pageNum, {
+                    model: verifierModel,
+                    reasoningEffort: page.codeSource === 'texto' ? config.idReasoningEffort : config.ocrReasoningEffort
+                });
+                return { page, visualCode };
+            } catch (err) {
+                throwIfInsufficientQuota(err, `OpenAI verificacion codigo pagina ${page.pageNum}`);
+                return { page, visualCode: null };
+            }
+        },
+        onResult: ({ page, visualCode }) => {
+            const expectedCode = normalizeCodeForAudit(page.match.code);
+            const observedCode = normalizeCodeForAudit(visualCode);
+            page.codigo_verificado = expectedCode === observedCode;
+            page.codigo_lectura_visual = observedCode || null;
+            if (page.codigo_verificado) {
+                logger.success(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: ${expectedCode} confirmado en imagen`);
+            } else {
+                unverified.push({ pagina: page.pageNum, esperado: expectedCode, lectura_visual: observedCode || null });
+                logger.warn(`  [VERIFY] Pagina ${page.pageNum}/${numPages}: esperado ${expectedCode}, lectura visual ${observedCode || 'NO_ENCONTRADO'}; requiere revision`);
+            }
+        }
+    });
+    return unverified;
+}
+
 /**
  * Agrupa cada página con match con las páginas siguientes sin código propio,
  * que se toman como continuación del mismo adjunto (por ejemplo tablas largas).
@@ -979,6 +1022,8 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
         id_buscado: match.code,
         id_encontrado: page.code,
         pagina: pageNum,
+        codigo_verificado: page.codigo_verificado === true,
+        codigo_lectura_visual: page.codigo_lectura_visual,
         paginas_continuacion: continuation.length > 0 ? continuation.length : undefined,
         confianza: match.score,
         recuperado_por_auditoria: page.rescuedByText || undefined,
@@ -1104,6 +1149,7 @@ export async function processFile(tiffPath, outputDir) {
     }
 
     reconcileMatches(pages, adjuntos, matchedCodes, numPages);
+    const codigosNoVerificados = await verifyMatchedCodes(tiffPath, pages, numPages);
 
     // ===================================================================
     // FASE 3: Extraccion de datos de cada adjunto (en paralelo)
@@ -1257,6 +1303,12 @@ export async function processFile(tiffPath, outputDir) {
     if (adjuntosConTruncado.length > 0) {
         advertencias.push(`${adjuntosConTruncado.length} adjunto(s) con texto truncado (posible perdida de demandados): ${adjuntosConTruncado.map(a => a.id_buscado).join(', ')}`);
     }
+    if (extractedData._error) {
+        advertencias.push(`Extraccion de caratula incompleta: ${extractedData._error}`);
+    }
+    if (codigosNoVerificados.length > 0) {
+        advertencias.push(`${codigosNoVerificados.length} codigo(s) R sin confirmacion visual exacta: ${codigosNoVerificados.map(item => item.esperado).join(', ')}`);
+    }
     if (adjuntosRecuperadosPorAuditoria.length > 0) {
         advertencias.push(`${adjuntosRecuperadosPorAuditoria.length} codigo(s) recuperado(s) por auditoria Vision: ${adjuntosRecuperadosPorAuditoria.map(a => a.id_buscado).join(', ')}`);
     }
@@ -1273,10 +1325,18 @@ export async function processFile(tiffPath, outputDir) {
         advertencias.push(`${errorCount} pagina(s) con errores de procesamiento`);
     }
 
-    const tieneErrores = adjuntosConError.length > 0 ||
+    const tieneErrores = Boolean(extractedData._error) ||
+        adjuntosConError.length > 0 ||
+        adjuntosConTruncado.length > 0 ||
+        codigosNoVerificados.length > 0 ||
         adjuntosConMatchAproximado.length > 0 ||
         notFound.length > 0 ||
         errorCount > 0;
+
+    const falloCritico = Boolean(extractedData._error) || adjuntosConError.length > 0 || notFound.length > 0 || errorCount > 0;
+    const estadoProcesamiento = falloCritico
+        ? 'error'
+        : tieneErrores ? 'requiere_revision' : 'completo';
 
     // Hash SHA-256 del archivo original para trazabilidad
     let archivoHash = '';
@@ -1291,13 +1351,15 @@ export async function processFile(tiffPath, outputDir) {
         paginas_transcritas: successCount,
         paginas_omitidas: skippedCount,
         tiene_errores: tieneErrores,
+        estado_procesamiento: estadoProcesamiento,
         advertencias: advertencias.length > 0 ? advertencias : undefined,
         ...extractedData,
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
         codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined,
+        codigos_no_verificados: codigosNoVerificados.length > 0 ? codigosNoVerificados : undefined,
         _auditoria: {
             modelo: modelLabel(),
-            version_sistema: '2.2.0',
+            version_sistema: '2.3.0',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
