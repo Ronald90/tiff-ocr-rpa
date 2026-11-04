@@ -48,14 +48,17 @@ Los archivos procesados se mueven a `processed/` y los que fallan a `error/`.
 Si vuelves a colocar el mismo TIFF en `input/`, el watcher lo procesa de nuevo;
 el historial registra los intentos y no impide validar cambios. Si ya existe
 un resultado con el mismo nombre en `output/`, el nuevo recibe un sufijo de tiempo.
-En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
-TIFF termina con errores, `error/` conserva solo el original, sin TXT ni JSON.
+En modo RPA, `output/` contiene solo los TXT y JSON de TIFF completos. Si un
+TIFF requiere revision o termina con errores, `error/` conserva solo el original,
+sin TXT ni JSON; esta carpeta incluye los casos pendientes, no solo fallos técnicos.
 Durante la extraccion, cada `[AVANCE]` muestra el codigo R, los campos ya
 obtenidos y cuántos adjuntos terminaron. Si hay un conflicto, muestra los dos
-valores y el fragmento donde apareció. Al final, `[MOTIVO]` enumera solo las
-causas que impiden publicar el TIFF. Estas lineas quedan en `rpa.log` para
-revisarlas sin repetir llamadas a la API. Los datos parciales de un TIFF con
-error se muestran en el log, pero no se publican como resultados definitivos.
+valores y el fragmento donde apareció. Al final, `[RESUMEN]` muestra el avance
+alcanzado, `[PENDIENTE]` indica lo que necesita revisión y `[MOTIVO]` indica
+los fallos de procesamiento. Estas lineas quedan en `rpa.log` para
+revisarlas sin repetir llamadas a la API. `[RESULTADO-PARCIAL]` conserva en el
+log todos los campos obtenidos de cada adjunto pendiente o fallido. Los datos parciales de un TIFF con
+revision o error se muestran en el log, pero no se publican como resultados definitivos.
 Si el TIFF ya se procesó y `OCR_CACHE_DIR` está configurado, puedes volver a
 ver los campos sin gastar tokens ni mover el archivo:
 
@@ -105,17 +108,19 @@ marca para revisión. Un título aislado de oficio o carta circular al inicio de
 la página, sin identificador legible, también requiere revisión. Las menciones
 de resoluciones dentro de un adjunto siguen como páginas de respaldo.
 
-El JSON aceptado incluye `estado_procesamiento: "completo"`. Los estados
-`"requiere_revision"` (por ejemplo, un código R que no coincide en la segunda
-lectura) y `"error"` (por ejemplo, un código faltante o una extracción fallida)
-solo se usan internamente para decidir el destino del TIFF. Una segunda lectura
+El JSON aceptado incluye `estado_procesamiento: "completo"`. El estado
+`"requiere_revision"` indica datos sin confirmar, como un código R faltante o
+dos nombres de juez distintos. `"error"` indica que falló una lectura o extracción.
+`tiene_errores` señala solo fallos de procesamiento; `requiere_revision` señala
+incertidumbre aunque las llamadas hayan terminado. Ambos estados impiden publicar
+el TIFF. Una segunda lectura
 automática reduce errores, pero no garantiza reconocimiento del 100 %; para esa
 exigencia hace falta comparar con el original y revisar los casos dudosos.
 
 En un TIFF SIREFO de una sola página, una referencia a instrucciones adjuntas
 sin código R se conserva en `documentos_adjuntos` y se avisa en `advertencias`;
 no se marca como código faltante porque ese detalle no está dentro del TIFF.
-Un código R mencionado y no localizado sigue siendo un error.
+Un código R mencionado y no localizado sigue requiriendo revisión.
 
 ## Estructura del proyecto
 
@@ -153,6 +158,7 @@ Un código R mencionado y no localizado sigue siendo un error.
 | `documentos_adjuntos` | array | Documentos adjuntos listados |
 | `modificaciones` | array | Menciones de modificaciones normativas |
 | `estado_procesamiento` | string | `completo`, `requiere_revision` o `error`; solo `completo` se publica en `output/` en modo RPA |
+| `tiene_errores` / `requiere_revision` | boolean | Distinguen fallos técnicos de datos que necesitan confirmación |
 | `ubicacion_adjuntos[].codigo_verificado` | boolean | Indica si una lectura visual o confirmación humana del TIFF exacto confirmó el código R esperado |
 | `ubicacion_adjuntos[].codigo_verificacion_fuente` | string | `vision` o `manual`; la auditoría registra las confirmaciones humanas por página |
 

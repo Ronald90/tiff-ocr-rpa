@@ -1067,7 +1067,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
     let hasCriticalFields = hasCriticalAdjuntoFields(adjuntoData);
 
     // Vision+1: si no hay continuaciones detectadas y faltan campos críticos
-    if (!adjuntoData._error && continuation.length === 0 && !hasCriticalFields) {
+    if (!adjuntoData._error && !adjuntoData._revision && continuation.length === 0 && !hasCriticalFields) {
         const nextPageIndex = pageIndex + 1;
         if (nextPageIndex < numPages && !pages[nextPageIndex]?.match && !pages[nextPageIndex]?.code) {
             try {
@@ -1094,7 +1094,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
         }
     }
 
-    if (!diagnostic && !adjuntoData._error && !adjuntoData.juez) {
+    if (!diagnostic && !adjuntoData._error && !adjuntoData._revision && !adjuntoData.juez) {
         const pngBuffer = await extractPageAsPng(tiffPath, pageIndex);
         const recoveredJudge = await recoverMissingJudge(pngBuffer, pageNum);
         if (recoveredJudge) {
@@ -1286,8 +1286,12 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
                         moneda: entry.moneda || ''
                     };
                     const progress = `[AVANCE] ${adjuntosTerminados}/${groups.length} ${entry.id_buscado}`;
-                    if (entry._error) {
-                        logger.error(`${progress} REVISAR: ${entry._error}${entry._conflictos?.length ? `; ${entry._conflictos.join('; ')}` : ''}; datos parciales ${JSON.stringify(data)}${entry._fragmentos_pendientes ? `; ${entry._fragmentos_pendientes} fragmento(s) sin consultar` : ''}`);
+                    if (entry._error || entry._revision) {
+                        const reason = entry._error || entry._revision;
+                        const message = `${progress} ${entry._error ? 'ERROR' : 'REQUIERE REVISION'}: ${reason}${entry._conflictos?.length ? `; ${entry._conflictos.join('; ')}` : ''}; datos obtenidos ${JSON.stringify(data)}${entry._fragmentos_pendientes ? `; ${entry._fragmentos_pendientes} fragmento(s) sin consultar` : ''}`;
+                        if (entry._error) logger.error(message);
+                        else logger.warn(message);
+                        logger.info(`[RESULTADO-PARCIAL] ${entry.id_buscado}: ${JSON.stringify(entry)}`);
                     } else {
                         logger.success(`${progress} extraido: ${JSON.stringify(data)}`);
                     }
@@ -1412,16 +1416,22 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
 
     // Detectar errores y advertencias en los adjuntos extraidos
     const adjuntosConError = ubicacion_adjuntos.filter(a => a._error);
+    const adjuntosConRevision = ubicacion_adjuntos.filter(a => a._revision);
     const adjuntosRecuperadosPorAuditoria = ubicacion_adjuntos.filter(a => a.recuperado_por_auditoria);
     const adjuntosConMatchAproximado = ubicacion_adjuntos.filter(a => a._advertencia_match_aproximado);
     const adjuntosConValoresDistintos = ubicacion_adjuntos.filter(a => a._advertencia_valores_distintos);
     const advertencias = [];
     const erroresBloqueantes = [];
-    if (diagnostic) erroresBloqueantes.push('Diagnostico de cache: codigos R sin nueva verificacion visual');
+    const motivosRevision = [];
+    if (diagnostic) motivosRevision.push('Diagnostico de cache: codigos R sin nueva verificacion visual');
 
     if (adjuntosConError.length > 0) {
         advertencias.push(`${adjuntosConError.length} adjunto(s) con error de extraccion: ${adjuntosConError.map(a => `${a.id_buscado} (${a._error})`).join(', ')}`);
         erroresBloqueantes.push(...adjuntosConError.map(a => `${a.id_buscado}: ${a._error}${a._conflictos?.length ? `; ${a._conflictos.join('; ')}` : ''}`));
+    }
+    if (adjuntosConRevision.length > 0) {
+        advertencias.push(`${adjuntosConRevision.length} adjunto(s) pendientes de revision: ${adjuntosConRevision.map(a => `${a.id_buscado} (${a._revision})`).join(', ')}`);
+        motivosRevision.push(...adjuntosConRevision.map(a => `${a.id_buscado}: ${a._revision}${a._conflictos?.length ? `; ${a._conflictos.join('; ')}` : ''}`));
     }
     if (extractedData._error) {
         advertencias.push(`Extraccion de caratula incompleta: ${extractedData._error}`);
@@ -1429,18 +1439,18 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
     }
     if (codigosNoVerificados.length > 0) {
         advertencias.push(`${codigosNoVerificados.length} codigo(s) R sin confirmacion visual exacta: ${codigosNoVerificados.map(item => item.esperado).join(', ')}`);
-        erroresBloqueantes.push(`Codigos R sin verificar: ${codigosNoVerificados.map(item => item.esperado).join(', ')}`);
+        motivosRevision.push(`Codigos R sin verificar: ${codigosNoVerificados.map(item => item.esperado).join(', ')}`);
     }
     if (paginasDocumentoNoIdentificado.length > 0) {
         advertencias.push(`Posible documento nuevo sin codigo R en pagina(s): ${paginasDocumentoNoIdentificado.map(item => `${item.pagina} (${item.identificador})`).join(', ')}`);
-        erroresBloqueantes.push(`Documento sin codigo R en pagina(s): ${paginasDocumentoNoIdentificado.map(item => item.pagina).join(', ')}`);
+        motivosRevision.push(`Documento sin codigo R en pagina(s): ${paginasDocumentoNoIdentificado.map(item => item.pagina).join(', ')}`);
     }
     if (adjuntosRecuperadosPorAuditoria.length > 0) {
         advertencias.push(`${adjuntosRecuperadosPorAuditoria.length} codigo(s) recuperado(s) por auditoria Vision: ${adjuntosRecuperadosPorAuditoria.map(a => a.id_buscado).join(', ')}`);
     }
     if (adjuntosConMatchAproximado.length > 0) {
         advertencias.push(`${adjuntosConMatchAproximado.length} match(es) aproximado(s) requieren revision manual: ${adjuntosConMatchAproximado.map(a => `${a.id_encontrado}->${a.id_buscado}`).join(', ')}`);
-        erroresBloqueantes.push(`Codigos aproximados sin confirmar: ${adjuntosConMatchAproximado.map(a => `${a.id_encontrado}->${a.id_buscado}`).join(', ')}`);
+        motivosRevision.push(`Codigos aproximados sin confirmar: ${adjuntosConMatchAproximado.map(a => `${a.id_encontrado}->${a.id_buscado}`).join(', ')}`);
     }
     // Solo informativo: juez y juzgado escritos distinto no cambian a quien ni
     // cuanto se retiene, por eso no bloquean el TIFF.
@@ -1452,25 +1462,16 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
     }
     if (notFound.length > 0) {
         advertencias.push(`${notFound.length} codigo(s) no encontrados en el documento`);
-        erroresBloqueantes.push(`Codigos no encontrados: ${notFound.map(doc => extractDocCode(doc) || 'SIN_CODIGO').join(', ')}`);
+        motivosRevision.push(`Codigos no encontrados: ${notFound.map(doc => extractDocCode(doc) || 'SIN_CODIGO').join(', ')}`);
     }
     if (errorCount > 0) {
         advertencias.push(`${errorCount} pagina(s) con errores de procesamiento`);
         erroresBloqueantes.push(`${errorCount} pagina(s) con errores de procesamiento`);
     }
 
-    const tieneErrores = diagnostic || Boolean(extractedData._error) ||
-        adjuntosConError.length > 0 ||
-        codigosNoVerificados.length > 0 ||
-        paginasDocumentoNoIdentificado.length > 0 ||
-        adjuntosConMatchAproximado.length > 0 ||
-        notFound.length > 0 ||
-        errorCount > 0;
-
-    const falloCritico = Boolean(extractedData._error) || adjuntosConError.length > 0 || notFound.length > 0 || errorCount > 0;
-    const estadoProcesamiento = falloCritico
-        ? 'error'
-        : tieneErrores ? 'requiere_revision' : 'completo';
+    const tieneErrores = erroresBloqueantes.length > 0;
+    const requiereRevision = motivosRevision.length > 0;
+    const estadoProcesamiento = tieneErrores ? 'error' : requiereRevision ? 'requiere_revision' : 'completo';
 
     const jsonOutput = {
         archivo_origen: path.basename(tiffPath),
@@ -1479,9 +1480,11 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
         paginas_transcritas: successCount,
         paginas_omitidas: skippedCount,
         tiene_errores: tieneErrores,
+        requiere_revision: requiereRevision,
         estado_procesamiento: estadoProcesamiento,
         advertencias: advertencias.length > 0 ? advertencias : undefined,
         errores_bloqueantes: erroresBloqueantes.length > 0 ? erroresBloqueantes : undefined,
+        motivos_revision: motivosRevision.length > 0 ? motivosRevision : undefined,
         ...extractedData,
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
         codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined,
@@ -1497,6 +1500,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
             confirmaciones_manuales: ubicacion_adjuntos.filter(a => a.codigo_verificacion_fuente === 'manual')
                 .map(a => ({ pagina: a.pagina, codigo: a.id_buscado })),
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
+            adjuntos_con_revision: adjuntosConRevision.length > 0 ? adjuntosConRevision.map(a => a.id_buscado) : undefined,
             adjuntos_recuperados_por_auditoria: adjuntosRecuperadosPorAuditoria.length > 0 ? adjuntosRecuperadosPorAuditoria.map(a => a.id_buscado) : undefined,
             adjuntos_match_aproximado: adjuntosConMatchAproximado.length > 0 ? adjuntosConMatchAproximado.map(a => a.id_buscado) : undefined
         }
@@ -1528,8 +1532,10 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
 
     if (diagnostic) {
         logger.info(`[DIAGNOSTICO] Reconstruccion terminada para ${path.basename(tiffPath)} (${elapsedStr}); no se publico ningun resultado.`);
+    } else if (estadoProcesamiento === 'requiere_revision') {
+        logger.warn(`[REVISION] Lectura terminada: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount}/${numPages} paginas transcritas, ${ubicacion_adjuntos.length}/${adjuntos.length} adjuntos localizados, ${adjuntosConRevision.length} adjunto(s) por revisar.`);
     } else if (tieneErrores) {
-        logger.warn(`⚠️ Completado CON ERRORES: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas, ${adjuntosConError.length} con error`);
+        logger.error(`[ERROR] Procesamiento incompleto: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount}/${numPages} paginas transcritas, ${ubicacion_adjuntos.length}/${adjuntos.length} adjuntos localizados, ${adjuntosConError.length} error(es) de extraccion.`);
     } else {
         logger.success(`Completado: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas`);
     }

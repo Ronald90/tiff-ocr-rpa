@@ -201,8 +201,12 @@ async function processPendingFiles() {
                     // No publicar resultados hasta conocer el estado final del TIFF.
                     stagingDir = fs.mkdtempSync(path.join(config.errorDir, '.processing-'));
                     const result = await processFile(filePath, stagingDir);
-                    const hasCriticalErrors = result.extractedData?.tiene_errores;
-                    const accepted = result.success > 0 && !hasCriticalErrors;
+                    const data = result.extractedData || {};
+                    const adjuntos = data.ubicacion_adjuntos || [];
+                    const revisiones = adjuntos.filter(adjunto => adjunto._revision).length;
+                    const fallidos = adjuntos.filter(adjunto => adjunto._error).length;
+                    logger.info(`[RESUMEN] ${filename}: ${result.success}/${result.numPages} pagina(s) transcrita(s), ${adjuntos.length}/${data.documentos_adjuntos?.length || 0} adjunto(s) localizado(s), ${adjuntos.length - revisiones - fallidos} completo(s), ${revisiones} por revisar, ${fallidos} con error de extraccion, ${result.errors} fallo(s) de lectura o extraccion.`);
+                    const accepted = result.success > 0 && data.estado_procesamiento === 'completo';
 
                     if (accepted) {
                         for (const resultPath of [result.outputPath, result.jsonPath]) {
@@ -225,11 +229,17 @@ async function processPendingFiles() {
                         }
 
                         logger.success(`[OK] ${filename} -> processed/`);
-                    } else if (result.success > 0 && hasCriticalErrors) {
+                    } else if (data.estado_procesamiento === 'requiere_revision') {
                         moveFile(filePath, config.errorDir);
-                        const reasons = result.extractedData?.errores_bloqueantes || ['Validacion incompleta'];
-                        logger.error(`[LEGAL] ${filename}: ${reasons.length} motivo(s) bloqueante(s). Solo el TIFF se mueve a error/.`);
+                        const reasons = data.motivos_revision || ['Validacion pendiente'];
+                        logger.warn(`[REVISION] ${filename}: ${reasons.length} punto(s) pendiente(s). Solo el TIFF se mueve a error/; no es un resultado aprobado.`);
+                        for (const reason of reasons) logger.warn(`  [PENDIENTE] ${reason}`);
+                    } else if (result.success > 0 && data.estado_procesamiento === 'error') {
+                        moveFile(filePath, config.errorDir);
+                        const reasons = data.errores_bloqueantes || ['Error de procesamiento'];
+                        logger.error(`[ERROR] ${filename}: ${reasons.length} motivo(s) bloqueante(s). Solo el TIFF se mueve a error/.`);
                         for (const reason of reasons) logger.error(`  [MOTIVO] ${reason}`);
+                        for (const reason of data.motivos_revision || []) logger.warn(`  [PENDIENTE] ${reason}`);
                     } else {
                         moveFile(filePath, config.errorDir);
                         logger.error(`Todas las páginas fallaron para ${filename}. Solo el TIFF se mueve a error/.`);

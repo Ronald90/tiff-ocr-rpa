@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import openai from '../openai-client.js';
+import logger from '../logger.js';
 import config from '../config.js';
 import { isVisuallyBlankPage, processFile } from '../ocr-engine.js';
 import { recordManualCodeConfirmation } from '../manual-code-confirmations.js';
@@ -28,6 +29,8 @@ const OFICIO = 'Oficio judicial de prueba. CITE 100/2025. Demandante Persona de 
 const CONTINUACION = 'Continuacion de la tabla de demandados del oficio anterior, sin sello de recepcion.';
 
 const originalCreate = openai.chat.completions.create;
+const originalWarn = logger.warn;
+const originalInfo = logger.info;
 const originalConcurrency = config.concurrency;
 const originalRetryDelayMs = config.retryDelayMs;
 const originalManualCodeConfirmationsFile = config.manualCodeConfirmationsFile;
@@ -39,6 +42,8 @@ beforeEach(() => {
 
 afterEach(() => {
     openai.chat.completions.create = originalCreate;
+    logger.warn = originalWarn;
+    logger.info = originalInfo;
     config.concurrency = originalConcurrency;
     config.retryDelayMs = originalRetryDelayMs;
     config.manualCodeConfirmationsFile = originalManualCodeConfirmationsFile;
@@ -167,12 +172,14 @@ describe('processFile', () => {
             mockOpenAI([externalAdjunto], { 1: { text: COVER } });
             const ordinary = (await run(onePageTiff)).extractedData;
             assert.equal(ordinary.es_sirefo, false);
-            assert.equal(ordinary.tiene_errores, true);
+            assert.equal(ordinary.tiene_errores, false);
+            assert.equal(ordinary.requiere_revision, true);
             assert.deepEqual(ordinary.codigos_no_encontrados, ['SIN_CODIGO']);
 
             mockOpenAI(['R-12345'], { 1: { text: sirefoCover } });
             const missingCode = (await run(onePageTiff)).extractedData;
-            assert.equal(missingCode.tiene_errores, true);
+            assert.equal(missingCode.tiene_errores, false);
+            assert.equal(missingCode.requiere_revision, true);
             assert.deepEqual(missingCode.codigos_no_encontrados, ['R-12345']);
         } finally {
             fs.rmSync(fixtureDir, { recursive: true, force: true });
@@ -303,7 +310,10 @@ describe('processFile', () => {
         assert.match(data.advertencias.join(' '), /juez o juzgado escrito distinto entre paginas: R-12345/);
     });
 
-    it('marca error cuando dos paginas indican jueces realmente distintos', async () => {
+    it('requiere revision cuando dos paginas indican jueces realmente distintos', async () => {
+        const progressLines = [];
+        logger.warn = message => { progressLines.push(message); originalWarn(message); };
+        logger.info = message => { if (message.includes('[RESULTADO-PARCIAL]')) progressLines.push(message); originalInfo(message); };
         mockOpenAI(['R-12345'], {
             1: { text: COVER },
             2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
@@ -317,9 +327,15 @@ describe('processFile', () => {
 
         const data = (await run(inkFixture)).extractedData;
 
-        assert.equal(data.tiene_errores, true);
-        assert.equal(data.estado_procesamiento, 'error');
+        assert.equal(data.tiene_errores, false);
+        assert.equal(data.requiere_revision, true);
+        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.ubicacion_adjuntos[0]._error, undefined);
+        assert.match(data.ubicacion_adjuntos[0]._revision, /juez/);
+        assert.match(data.motivos_revision.join(' '), /Carlos Gomez/);
         assert.match(data.advertencias.join(' '), /Campos del mismo proceso contradictorios entre fragmentos: juez/);
+        assert.match(progressLines.join(' '), /\[AVANCE\].*REQUIERE REVISION.*datos obtenidos/);
+        assert.match(progressLines.join(' '), /\[RESULTADO-PARCIAL\].*Carlos Gomez/);
     });
 
     it('acepta como en blanco una pagina con motas del escaner y OCR vacio', async () => {
@@ -364,7 +380,7 @@ describe('processFile', () => {
         const result = await run(inkFixture);
         const data = result.extractedData;
 
-        assert.equal(data.tiene_errores, true);
+        assert.equal(data.tiene_errores, false);
         assert.equal(data.estado_procesamiento, 'requiere_revision');
         assert.deepEqual(data.paginas_documento_no_identificado, [{ pagina: 3, identificador: '999/2025' }]);
         assert.doesNotMatch(result.visionText, /Documento independiente sin sello R/);
@@ -458,7 +474,7 @@ describe('processFile', () => {
 
         const data = (await run()).extractedData;
 
-        assert.equal(data.tiene_errores, true);
+        assert.equal(data.tiene_errores, false);
         assert.equal(data.estado_procesamiento, 'requiere_revision');
         assert.deepEqual(data.codigos_no_verificados, [
             { pagina: 2, esperado: 'R-12345', lectura_visual: 'R-12346' }

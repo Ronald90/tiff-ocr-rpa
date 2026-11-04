@@ -247,7 +247,7 @@ describe('extraccion de adjuntos largos', () => {
 
         assert.equal(result.demandados.length, 1);
         assert.equal(result.demandados[0].monto, '100,00');
-        assert.match(result._error, /demandados\.monto/);
+        assert.match(result._revision, /demandados\.monto/);
     });
 
     it('mantiene como filas distintas a la misma persona con otra resolucion', async () => {
@@ -299,7 +299,7 @@ describe('extraccion de adjuntos largos', () => {
 
         const result = await extractAdjuntoFields(principal, { primaryText: principal });
 
-        assert.match(result._error, /demandados\.resolucion_ambigua/);
+        assert.match(result._revision, /demandados\.resolucion_ambigua/);
     });
 
     it('compara montos por su valor y no por su formato', async () => {
@@ -354,8 +354,8 @@ describe('extraccion de adjuntos largos', () => {
 
         const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
 
-        assert.match(result._error, /juez/);
-        assert.match(result._error, /juzgado/);
+        assert.match(result._revision, /juez/);
+        assert.match(result._revision, /juzgado/);
         assert.ok(result._conflictos.some(value => value.includes('Alberto Llanos Martinez')));
     });
 
@@ -371,7 +371,7 @@ describe('extraccion de adjuntos largos', () => {
         const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
 
         assert.equal(calls, 2);
-        assert.match(result._error, /juez/);
+        assert.match(result._revision, /juez/);
         assert.match(result._conflictos[0], /"Juan Perez" frente a "Pedro Lopez"/);
         assert.ok(result._fragmentos_pendientes > 0);
     });
@@ -447,7 +447,7 @@ describe('extraccion de adjuntos largos', () => {
         } }] });
 
         const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
-        assert.match(result._error, /nro_documento_respaldo/);
+        assert.match(result._revision, /nro_documento_respaldo/);
     });
 
     it('acepta el mismo NUREJ cuando OCR separa la letra final', async () => {

@@ -19,7 +19,10 @@ if (!tiffPath || (option && option !== '--full') || process.argv.length > 4) {
         const data = result.extractedData;
         console.log(`Diagnostico terminado: ${data.ubicacion_adjuntos?.length || 0} adjunto(s) con datos parciales.`);
         for (const reason of data.errores_bloqueantes || []) {
-            if (!reason.startsWith('Diagnostico de cache:')) console.log(`MOTIVO: ${reason}`);
+            console.log(`ERROR: ${reason}`);
+        }
+        for (const reason of data.motivos_revision || []) {
+            if (!reason.startsWith('Diagnostico de cache:')) console.log(`PENDIENTE: ${reason}`);
         }
         if (option === '--full') console.log(JSON.stringify(data, null, 2));
     } catch (error) {

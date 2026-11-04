@@ -40,8 +40,13 @@ try {
     console.log('\n[DATA] Datos extraídos:');
     console.log(JSON.stringify(result.extractedData, null, 2));
 
-    if (result.extractedData?.tiene_errores) {
-        console.error('\n[LEGAL] Resultado con errores criticos. Revisa advertencias/codigos_no_encontrados antes de usarlo.');
+    if (result.extractedData?.estado_procesamiento === 'requiere_revision') {
+        console.warn('\n[REVISION] Lectura terminada con datos por confirmar. El resultado no esta aprobado.');
+        for (const reason of result.extractedData.motivos_revision || []) console.warn(`  [PENDIENTE] ${reason}`);
+        process.exitCode = 2;
+    } else if (result.extractedData?.estado_procesamiento === 'error') {
+        console.error('\n[ERROR] Procesamiento incompleto. Revisa los motivos antes de usarlo.');
+        for (const reason of result.extractedData.errores_bloqueantes || []) console.error(`  [MOTIVO] ${reason}`);
         process.exitCode = 2;
     }
 } catch (err) {

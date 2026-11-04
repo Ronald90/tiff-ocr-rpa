@@ -997,7 +997,7 @@ export async function extractAdjuntoFields(ocrText, { primaryText, continuationT
     merged.demandados = mergedDemandados.rows;
     for (const key of mergedDemandados.conflictingFields) conflictingFields.add(key);
     if (conflictingFields.size > 0) {
-        merged._error = `Campos del mismo proceso contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
+        merged._revision = `Campos del mismo proceso contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
         if (conflictingDetails.length > 0) merged._conflictos = conflictingDetails;
     }
     if (differentValues.length > 0) merged._advertencia_valores_distintos = differentValues;
