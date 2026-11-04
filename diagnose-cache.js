@@ -23,7 +23,12 @@ if (!tiffPath || (option && option !== '--full') || process.argv.length > 4) {
         }
         if (option === '--full') console.log(JSON.stringify(data, null, 2));
     } catch (error) {
-        console.error(`Diagnostico incompleto: ${error.message}`);
+        // Paginas y adjuntos sin cache quedan pendientes dentro del resultado.
+        // Solo la caratula corta el diagnostico: sin ella no hay codigos R.
+        const reason = error.code === 'offline_cache_miss'
+            ? `la caratula no esta en la cache local (${error.message})`
+            : error.message;
+        console.error(`Diagnostico incompleto: ${reason}`);
         process.exitCode = 1;
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });

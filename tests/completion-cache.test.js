@@ -61,7 +61,7 @@ it('el diagnostico solo lee cache y nunca consulta la API ante faltantes', async
     const cached = cacheCompletions(async () => completion(`respuesta ${++calls}`), dir);
     const request = { model: 'modelo', messages: [{ role: 'user', content: 'imagen' }] };
 
-    await assert.rejects(withCacheOnly(() => cached(request)), /Diagnostico sin API/);
+    await assert.rejects(withCacheOnly(() => cached(request)), /Diagnostico sin API: respuesta no disponible en cache \([0-9a-f]{12}\)$/);
     assert.equal(calls, 0);
     await cached(request);
     assert.equal((await withCacheOnly(() => cached(request))).choices[0].message.content, 'respuesta 1');

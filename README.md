@@ -54,14 +54,14 @@ TIFF queda incompleto, la carpeta configurada conserva el TIFF junto con el TXT
 y JSON parciales en una subcarpeta propia de ese intento. El JSON indica
 `estado_procesamiento: "incompleto"` y enumera `motivos_incompleto`; el TXT marca
 ese estado y conserva también las páginas transcritas sin adjunto asignado.
-Durante la extraccion, cada `[AVANCE]` muestra el codigo R, los campos ya
-obtenidos y cuántos adjuntos terminaron. Si hay un conflicto, muestra los dos
-valores y el fragmento donde apareció. Al final, `[RESUMEN]` muestra el avance
-alcanzado y `[PENDIENTE]` indica qué impidió completar el archivo. Estas lineas
-quedan en `rpa.log` para
-revisarlas sin repetir llamadas a la API. `[RESULTADO-PARCIAL]` conserva en el
-log todos los campos obtenidos de cada adjunto pendiente. Los datos parciales
-se guardan para revisión, separados de los resultados definitivos.
+Durante la extraccion, cada `[AVANCE]` muestra el codigo R, cuántos adjuntos
+terminaron, cuántos demandados tiene y qué campos se obtuvieron, sin sus
+valores. Al final, `[RESUMEN]` muestra el avance alcanzado y `[PENDIENTE]`
+indica qué impidió completar el archivo. Estas líneas quedan en `rpa.log`, que
+es texto plano: por eso nunca contienen nombres, documentos de identidad ni
+montos. Los valores, incluidos los dos valores de cada conflicto
+(`_conflictos`), están solo en el JSON parcial, separado de los resultados
+definitivos.
 Si el TIFF ya se procesó y `OCR_CACHE_DIR` está configurado, puedes volver a
 ver los campos sin gastar tokens ni mover el archivo:
 
@@ -71,10 +71,17 @@ npm run diagnose-cache -- error/carpeta_incompleto_xxx/archivo.tif
 ```
 
 El diagnóstico usa exclusivamente respuestas existentes en la caché. Omite la
-verificación visual y nunca publica resultados. Las identificaciones negativas
-no se guardan en caché y se muestran como no disponibles; si falta el OCR o la
-extracción, termina con un aviso sin consultar la API. Debe usarse con el mismo TIFF,
-modelos, parámetros y prompts de la ejecución anterior.
+verificación visual y nunca publica resultados. La caché no guarda respuestas
+vacías, truncadas ni fallidas, así que el diagnóstico sigue sin ellas:
+- una identificación negativa se muestra como no disponible;
+- una página sin OCR en caché se toma como en blanco si lo está a la vista;
+  si tiene tinta, queda pendiente con su número;
+- un adjunto sin extracción en caché queda pendiente y los demás se
+  reconstruyen igual.
+
+Solo la carátula es imprescindible: sin ella no se conocen los códigos R y el
+diagnóstico termina con un aviso. Nunca consulta la API. Debe usarse con el
+mismo TIFF, modelos, parámetros y prompts de la ejecución anterior.
 Si configuras `OCR_CACHE_DIR`, las respuestas válidas de la API se conservan en
 esa carpeta como archivos binarios comprimidos. Al volver a intentar el mismo
 TIFF se reutilizan las solicitudes idénticas, incluso si el TIFF anterior fue

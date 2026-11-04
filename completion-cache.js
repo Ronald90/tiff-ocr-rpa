@@ -119,7 +119,8 @@ export function cacheCompletions(create, cacheDir) {
         } catch (err) {
             if (cacheOnly) {
                 if (err instanceof CacheOnlyMissError) throw err;
-                throw new CacheOnlyMissError(`Diagnostico sin API: respuesta no disponible en cache (${key.slice(0, 12)}): ${err.message}`);
+                const detail = err.code === 'ENOENT' ? '' : `: ${err.message}`;
+                throw new CacheOnlyMissError(`Diagnostico sin API: respuesta no disponible en cache (${key.slice(0, 12)})${detail}`);
             }
             if (err.code !== 'ENOENT') logger.warn(`[CACHE] No se pudo leer ${key.slice(0, 12)}: ${err.message}`);
         }

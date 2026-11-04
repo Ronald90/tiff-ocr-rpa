@@ -846,6 +846,9 @@ async function extractAdjuntoChunk(chunk, index, total, mode, primaryText) {
             return normalized;
 
         } catch (err) {
+            // En diagnostico sin API este fragmento queda pendiente; los demas
+            // adjuntos del TIFF se siguen reconstruyendo desde la cache.
+            if (err?.code === 'offline_cache_miss') return { ...ADJUNTO_EMPTY, _error: err.message };
             throwIfInsufficientQuota(err, `[ADJUNTO-EXTRACT] OpenAI adjunto con ${model}`);
 
             // Repetir con el mismo tope volveria a truncar: se reintenta una

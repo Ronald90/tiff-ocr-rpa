@@ -42,6 +42,9 @@ const HANDWRITING_CONTRAST = 1.5;
 /** Longitud máxima de texto para considerar como rechazo del modelo */
 const REFUSAL_MAX_LENGTH = 200;
 
+/** Campos de un adjunto cuya presencia (no su valor) se informa en [AVANCE] */
+const PROGRESS_FIELDS = ['nro_cite', 'fecha_cite', 'ciudad_cite', 'demandante', 'juez', 'juzgado', 'monto_retenido', 'moneda'];
+
 // ── Cargar prompts desde archivos externos ────────────────────────────
 
 const PROMPTS = {
@@ -680,6 +683,15 @@ async function readPage(tiffPath, pageIndex, adjuntos, diagnostic = false) {
         }
         return { pageIndex, pageNum, sizeKB, text, code, codeSource: code ? 'imagen' : null, diagnosticIdUnavailable, error: null };
     } catch (err) {
+        if (diagnostic && err?.code === 'offline_cache_miss') {
+            // La cache no guarda respuestas vacias, truncadas ni fallidas. Una
+            // pagina en blanco se reconoce sin API; otra queda pendiente sola,
+            // sin cortar el diagnostico del resto del TIFF.
+            if (await isVisuallyBlankPage(tiffPath, pageIndex)) {
+                return { pageIndex, pageNum, sizeKB: '0', text: '', code: null, codeSource: null, blank: true, error: null };
+            }
+            return { pageIndex, pageNum, sizeKB: '0', text: '', code: null, codeSource: null, error: new Error(`Diagnostico sin API: la lectura de la pagina ${pageNum} no esta en cache`) };
+        }
         throwIfInsufficientQuota(err, `OpenAI pagina ${pageNum}`);
         return { pageIndex, pageNum, sizeKB: '0', text: '', code: null, codeSource: null, error: err };
     }
@@ -1273,30 +1285,21 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
                 try {
                     const entry = await extractAdjuntoGroup(groups[index], doc);
                     adjuntosTerminados++;
-                    const data = {
-                        pagina: entry.pagina,
-                        nro_cite: entry.nro_cite || '',
-                        fecha_cite: entry.fecha_cite || '',
-                        ciudad_cite: entry.ciudad_cite || '',
-                        demandante: entry.demandante || '',
-                        juez: entry.juez || '',
-                        juzgado: entry.juzgado || '',
-                        demandados: entry.demandados?.length || 0,
-                        monto_retenido: entry.monto_retenido || '',
-                        moneda: entry.moneda || ''
-                    };
+                    // rpa.log es texto plano y persiste: el avance nombra los
+                    // campos obtenidos, nunca sus valores. Los valores quedan
+                    // solo en el JSON.
+                    const obtenidos = PROGRESS_FIELDS.filter(key => entry[key]);
+                    const summary = `pagina ${entry.pagina}, ${entry.demandados?.length || 0} demandado(s), campos: ${obtenidos.join(', ') || 'ninguno'}`;
                     const progress = `[AVANCE] ${adjuntosTerminados}/${groups.length} ${entry.id_buscado}`;
                     if (entry._error || entry._revision) {
-                        const reason = entry._error || entry._revision;
-                        const message = `${progress} INCOMPLETO: ${reason}${entry._conflictos?.length ? `; ${entry._conflictos.join('; ')}` : ''}; datos obtenidos ${JSON.stringify(data)}${entry._fragmentos_pendientes ? `; ${entry._fragmentos_pendientes} fragmento(s) sin consultar` : ''}`;
-                        logger.warn(message);
-                        logger.info(`[RESULTADO-PARCIAL] ${entry.id_buscado}: ${JSON.stringify(entry)}`);
+                        const pendientes = entry._fragmentos_pendientes ? `; ${entry._fragmentos_pendientes} fragmento(s) sin consultar` : '';
+                        logger.warn(`${progress} INCOMPLETO: ${entry._error || entry._revision}; ${summary}${pendientes}`);
                     } else {
-                        logger.success(`${progress} extraido: ${JSON.stringify(data)}`);
+                        logger.success(`${progress} extraido: ${summary}`);
                     }
                     return entry;
                 } catch (err) {
-                    throwIfInsufficientQuota(err, `OpenAI pagina ${page.pageNum}`);
+                    if (!(diagnostic && err?.code === 'offline_cache_miss')) throwIfInsufficientQuota(err, `OpenAI pagina ${page.pageNum}`);
                     adjuntosTerminados++;
                     logger.warn(`[AVANCE] ${adjuntosTerminados}/${groups.length} ${page.match.code} INCOMPLETO: no se pudo terminar la pagina ${page.pageNum}/${numPages}: ${err.message}`);
                     errorCount++;
@@ -1426,11 +1429,13 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
 
     if (adjuntosConError.length > 0) {
         advertencias.push(`${adjuntosConError.length} adjunto(s) con error de extraccion: ${adjuntosConError.map(a => `${a.id_buscado} (${a._error})`).join(', ')}`);
-        erroresBloqueantes.push(...adjuntosConError.map(a => `${a.id_buscado}: ${a._error}${a._conflictos?.length ? `; ${a._conflictos.join('; ')}` : ''}`));
+        erroresBloqueantes.push(...adjuntosConError.map(a => `${a.id_buscado}: ${a._error}`));
     }
     if (adjuntosConRevision.length > 0) {
         advertencias.push(`${adjuntosConRevision.length} adjunto(s) pendientes de revision: ${adjuntosConRevision.map(a => `${a.id_buscado} (${a._revision})`).join(', ')}`);
-        motivosRevision.push(...adjuntosConRevision.map(a => `${a.id_buscado}: ${a._revision}${a._conflictos?.length ? `; ${a._conflictos.join('; ')}` : ''}`));
+        // Los motivos se repiten en rpa.log: los valores en conflicto quedan solo
+        // en el JSON, dentro de _conflictos de cada adjunto.
+        motivosRevision.push(...adjuntosConRevision.map(a => `${a.id_buscado}: ${a._revision}${a._conflictos?.length ? ' (valores en _conflictos)' : ''}`));
     }
     if (extractedData._error) {
         advertencias.push(`Extraccion de caratula incompleta: ${extractedData._error}`);
@@ -1464,8 +1469,10 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
         motivosRevision.push(`Codigos no encontrados: ${notFound.map(doc => extractDocCode(doc) || 'SIN_CODIGO').join(', ')}`);
     }
     if (errorCount > 0) {
-        advertencias.push(`${errorCount} pagina(s) o extraccion(es) sin terminar`);
-        erroresBloqueantes.push(`${errorCount} pagina(s) o extraccion(es) sin terminar`);
+        const paginasSinLeer = pages.filter(page => page?.error).map(page => page.pageNum);
+        const motivo = `${errorCount} pagina(s) o extraccion(es) sin terminar${paginasSinLeer.length > 0 ? ` (lectura fallida en pagina(s) ${paginasSinLeer.join(', ')})` : ''}`;
+        advertencias.push(motivo);
+        erroresBloqueantes.push(motivo);
     }
 
     const motivosIncompleto = [...erroresBloqueantes, ...motivosRevision];
@@ -1504,7 +1511,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
         paginas_documento_no_identificado: paginasDocumentoNoIdentificado.length > 0 ? paginasDocumentoNoIdentificado : undefined,
         _auditoria: {
             modelo: modelLabel(),
-            version_sistema: '2.3.5',
+            version_sistema: '2.4.0',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
             diagnostico_sin_api: diagnostic || undefined,

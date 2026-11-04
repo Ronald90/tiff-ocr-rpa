@@ -31,6 +31,7 @@ const CONTINUACION = 'Continuacion de la tabla de demandados del oficio anterior
 const originalCreate = openai.chat.completions.create;
 const originalWarn = logger.warn;
 const originalInfo = logger.info;
+const originalSuccess = logger.success;
 const originalConcurrency = config.concurrency;
 const originalRetryDelayMs = config.retryDelayMs;
 const originalManualCodeConfirmationsFile = config.manualCodeConfirmationsFile;
@@ -44,6 +45,7 @@ afterEach(() => {
     openai.chat.completions.create = originalCreate;
     logger.warn = originalWarn;
     logger.info = originalInfo;
+    logger.success = originalSuccess;
     config.concurrency = originalConcurrency;
     config.retryDelayMs = originalRetryDelayMs;
     config.manualCodeConfirmationsFile = originalManualCodeConfirmationsFile;
@@ -128,6 +130,15 @@ function mockOpenAI(adjuntos, pages) {
     };
 
     return calls;
+}
+
+async function diagnose(tiffPath) {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-diagnostic-test-'));
+    try {
+        return (await processFile(tiffPath, outputDir, { diagnostic: true })).extractedData;
+    } finally {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+    }
 }
 
 async function run(tiffPath = fixture) {
@@ -308,9 +319,10 @@ describe('processFile', () => {
     });
 
     it('requiere revision cuando dos paginas indican jueces realmente distintos', async () => {
-        const progressLines = [];
-        logger.warn = message => { progressLines.push(message); originalWarn(message); };
-        logger.info = message => { if (message.includes('[RESULTADO-PARCIAL]')) progressLines.push(message); originalInfo(message); };
+        const logLines = [];
+        logger.warn = message => { logLines.push(message); originalWarn(message); };
+        logger.info = message => { logLines.push(message); originalInfo(message); };
+        logger.success = message => { logLines.push(message); originalSuccess(message); };
         mockOpenAI(['R-12345'], {
             1: { text: COVER },
             2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
@@ -329,11 +341,15 @@ describe('processFile', () => {
         assert.equal('requiere_revision' in data, false);
         assert.equal(data.ubicacion_adjuntos[0]._error, undefined);
         assert.match(data.ubicacion_adjuntos[0]._revision, /juez/);
-        assert.match(data.motivos_incompleto.join(' '), /Carlos Gomez/);
+        assert.match(data.ubicacion_adjuntos[0]._conflictos.join(' '), /Carlos Gomez/);
+        assert.match(data.motivos_incompleto.join(' '), /R-12345: .*juez \(valores en _conflictos\)/);
         assert.match(data.advertencias.join(' '), /Campos del mismo proceso contradictorios entre fragmentos: juez/);
         assert.match(result.visionText, /ESTADO DE PROCESAMIENTO: INCOMPLETO/);
-        assert.match(progressLines.join(' '), /\[AVANCE\].*INCOMPLETO.*datos obtenidos/);
-        assert.match(progressLines.join(' '), /\[RESULTADO-PARCIAL\].*Carlos Gomez/);
+        assert.match(logLines.join(' '), /\[AVANCE\] 1\/1 R-12345 INCOMPLETO: .*juez; pagina 2, 0 demandado\(s\), campos: nro_cite, demandante, juez/);
+        // rpa.log persiste en texto plano: nombra campos, nunca sus valores.
+        for (const value of ['Carlos Gomez', 'Juan Perez', 'Persona de Prueba', 'CITE 100/2025']) {
+            assert.equal(logLines.some(line => line.includes(value)), false, value);
+        }
     });
 
     it('acepta como en blanco una pagina con motas del escaner y OCR vacio', async () => {
@@ -503,6 +519,75 @@ describe('processFile', () => {
         } finally {
             fs.rmSync(outputDir, { recursive: true, force: true });
         }
+    });
+
+    it('el diagnostico reconoce sin API una pagina en blanco que no esta en cache', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` }
+        });
+        const mockedCreate = openai.chat.completions.create;
+        // La cache nunca guarda la respuesta vacia de una pagina en blanco.
+        openai.chat.completions.create = request => {
+            if (request.messages[0].content === SYSTEM.ocr && pageOf(request) === 3) {
+                throw new CacheOnlyMissError('Diagnostico sin API: respuesta no disponible en cache (prueba)');
+            }
+            return mockedCreate(request);
+        };
+
+        const data = await diagnose(speckledFixture);
+
+        assert.equal(data.estado_procesamiento, 'incompleto');
+        assert.equal(data.ubicacion_adjuntos[0].demandante, 'Persona de Prueba');
+        assert.deepEqual(data.motivos_incompleto, ['Diagnostico de cache: codigos R sin nueva verificacion visual']);
+    });
+
+    it('el diagnostico deja pendiente solo la pagina con tinta que falta en cache', async () => {
+        mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: CONTINUACION }
+        });
+        const mockedCreate = openai.chat.completions.create;
+        openai.chat.completions.create = request => {
+            if (request.messages[0].content === SYSTEM.ocr && pageOf(request) === 3) {
+                throw new CacheOnlyMissError('Diagnostico sin API: respuesta no disponible en cache (prueba)');
+            }
+            return mockedCreate(request);
+        };
+
+        const data = await diagnose(inkFixture);
+
+        assert.equal(data.ubicacion_adjuntos[0].demandante, 'Persona de Prueba');
+        assert.match(data.motivos_incompleto.join(' '), /lectura fallida en pagina\(s\) 3\)/);
+    });
+
+    it('el diagnostico conserva los demas adjuntos cuando falta una extraccion en cache', async () => {
+        const calls = mockOpenAI(['R-12345', 'R-54321'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: CONTINUACION },
+            4: { text: `ASFI RECEPCION R-54321\n${OFICIO}` },
+            5: { text: CONTINUACION },
+            6: { text: `ASFI RECEPCION R-77777\n${OFICIO}`, id: 'R-77777' }
+        });
+        const mockedCreate = openai.chat.completions.create;
+        openai.chat.completions.create = request => {
+            if (request.response_format?.json_schema?.name === 'adjunto_extraction' && request.messages[1].content.includes('R-12345')) {
+                throw new CacheOnlyMissError('Diagnostico sin API: respuesta no disponible en cache (prueba)');
+            }
+            return mockedCreate(request);
+        };
+
+        const data = await diagnose(fixture);
+        const [first, second] = data.ubicacion_adjuntos;
+
+        assert.equal(first.id_buscado, 'R-12345');
+        assert.match(first._error, /^Fragmento 1\/2: Diagnostico sin API/);
+        assert.equal(second.id_buscado, 'R-54321');
+        assert.equal(second._error, undefined);
+        assert.equal(second.demandante, 'Persona de Prueba');
+        assert.equal(calls.extract, 2);
     });
 
     it('resuelve una lectura visual discordante con una lectura adicional', async () => {
