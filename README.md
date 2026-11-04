@@ -57,22 +57,24 @@ ese estado y conserva también las páginas transcritas sin adjunto asignado.
 Durante la extraccion, cada `[AVANCE]` muestra el codigo R, cuántos adjuntos
 terminaron, cuántos demandados tiene y qué campos se obtuvieron, sin sus
 valores. Al final, `[RESUMEN]` muestra el avance alcanzado y `[PENDIENTE]`
-indica qué impidió completar el archivo. Estas líneas quedan en `rpa.log`, que
-es texto plano: por eso nunca contienen nombres, documentos de identidad ni
-montos. Los valores, incluidos los dos valores de cada conflicto
-(`_conflictos`), están solo en el JSON parcial, separado de los resultados
-definitivos.
+indica qué impidió completar el archivo. Estos mensajes de progreso quedan en
+`rpa.log` sin valores extraídos. El log puede contener nombres de archivo o
+mensajes de error del proveedor; los valores extraídos, incluidos los dos de
+cada conflicto (`_conflictos`), se conservan en el JSON parcial, separado de
+los resultados definitivos.
 Si el TIFF ya se procesó y `OCR_CACHE_DIR` está configurado, puedes volver a
 ver los campos sin gastar tokens ni mover el archivo:
 
 ```bash
 npm run diagnose-cache -- error/carpeta_incompleto_xxx/archivo.tif
-# Agrega --full para imprimir el JSON completo en la terminal, sin guardarlo.
+# Agrega --full para imprimir los valores y el JSON completo, sin guardarlo.
 ```
 
 El diagnóstico usa exclusivamente respuestas existentes en la caché. Omite la
-verificación visual y nunca publica resultados. La caché no guarda respuestas
-vacías, truncadas ni fallidas, así que el diagnóstico sigue sin ellas:
+verificación visual y nunca publica resultados. Muestra por cada código R los
+campos con dato y sin dato; un campo vacío puede no aplicar a ese documento.
+La caché no guarda respuestas vacías, truncadas ni fallidas, así que el
+diagnóstico sigue sin ellas:
 - una identificación negativa se muestra como no disponible;
 - una página sin OCR en caché se toma como en blanco si lo está a la vista;
   si tiene tinta, queda pendiente con su número;

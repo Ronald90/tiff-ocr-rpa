@@ -377,7 +377,7 @@ async function extractJudgeFromCrop(pngBuffer, pageNum, label) {
         const raw = (response.choices?.[0]?.message?.content ?? '').trim();
         const normalized = normalizeJuezValue(raw);
         if (normalized) {
-            logger.info(`  [JUEZ] Pagina ${pageNum} - Nombre recuperado desde ${label}: ${normalized}`);
+            logger.info(`  [JUEZ] Pagina ${pageNum} - Nombre recuperado desde ${label}`);
             return normalized;
         }
 
@@ -1231,7 +1231,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
     } else {
         logger.info(`[FASE 1] Documentos adjuntos encontrados: ${adjuntos.length}`);
         for (const adj of adjuntos) {
-            logger.info(`  -> ${adj}`);
+            logger.info(`  -> ${extractDocCode(adj) || 'SIN_CODIGO'}`);
         }
     }
 
@@ -1346,7 +1346,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
         logger.warn('+======================================================+');
         for (const doc of notFound) {
             const code = extractDocCode(doc) || 'SIN_CODIGO';
-            logger.warn(`|  x ${code.padEnd(15)} - ${doc}`);
+            logger.warn(`|  x ${code.padEnd(15)} |`);
         }
         logger.warn('+======================================================+');
         logger.warn(`|  Total no encontrados: ${String(notFound.length).padEnd(3)} de ${adjuntos.length} adjuntos     |`);

@@ -23,6 +23,8 @@ const ADJUNTO_EMPTY = {
     juzgado: ''
 };
 
+export const ADJUNTO_FIELD_NAMES = Object.freeze(Object.keys(ADJUNTO_EMPTY));
+
 const ADJUNTO_RESPONSE_FORMAT = {
     type: 'json_schema',
     json_schema: {
@@ -514,7 +516,7 @@ function applyTextFallbacks(result, ocrText) {
         const fallbackNroCite = extractNroCiteFallback(ocrText);
         if (fallbackNroCite) {
             result.nro_cite = fallbackNroCite;
-            logger.info(`[ADJUNTO-EXTRACT] nro_cite recuperado por regex: ${fallbackNroCite}`);
+            logger.info('[ADJUNTO-EXTRACT] nro_cite recuperado por regex');
         }
     }
 }

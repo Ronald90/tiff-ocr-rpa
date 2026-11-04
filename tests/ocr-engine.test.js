@@ -22,7 +22,8 @@ const readPrompt = name => fs.readFileSync(path.resolve('prompts', name), 'utf-8
 const SYSTEM = {
     ocr: readPrompt('ocr_vision_system.txt'),
     id: readPrompt('id_doc_system.txt'),
-    idExpected: readPrompt('id_doc_expected_system.txt')
+    idExpected: readPrompt('id_doc_expected_system.txt'),
+    judge: readPrompt('extract_juez_system.txt')
 };
 const COVER = 'Caratula de prueba para tramites de la autoridad financiera con documentos adjuntos listados.';
 const OFICIO = 'Oficio judicial de prueba. CITE 100/2025. Demandante Persona de Prueba. Juez Juan Perez.';
@@ -348,6 +349,37 @@ describe('processFile', () => {
         assert.match(logLines.join(' '), /\[AVANCE\] 1\/1 R-12345 INCOMPLETO: .*juez; pagina 2, 0 demandado\(s\), campos: nro_cite, demandante, juez/);
         // rpa.log persiste en texto plano: nombra campos, nunca sus valores.
         for (const value of ['Carlos Gomez', 'Juan Perez', 'Persona de Prueba', 'CITE 100/2025']) {
+            assert.equal(logLines.some(line => line.includes(value)), false, value);
+        }
+    });
+
+    it('recupera el juez sin escribir su nombre ni otros valores extraidos en el log', async () => {
+        const logLines = [];
+        logger.info = message => { logLines.push(message); originalInfo(message); };
+        logger.warn = message => { logLines.push(message); originalWarn(message); };
+        logger.success = message => { logLines.push(message); originalSuccess(message); };
+        mockOpenAI(['R-12345 DE NOMBRE RESERVADO'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` }
+        });
+        const mockedCreate = openai.chat.completions.create;
+        openai.chat.completions.create = request => {
+            if (request.response_format?.json_schema?.name === 'adjunto_extraction') {
+                return completion(JSON.stringify({
+                    nro_cite: 'CITE 100/2025',
+                    demandante: 'Persona Reservada',
+                    demandados: [],
+                    juez: ''
+                }));
+            }
+            if (request.messages[0].content === SYSTEM.judge) return completion('Maria Prueba Lopez');
+            return mockedCreate(request);
+        };
+
+        const data = (await run()).extractedData;
+
+        assert.equal(data.ubicacion_adjuntos[0].juez, 'Maria Prueba Lopez');
+        for (const value of ['NOMBRE RESERVADO', 'Persona Reservada', 'Maria Prueba Lopez', 'CITE 100/2025']) {
             assert.equal(logLines.some(line => line.includes(value)), false, value);
         }
     });
