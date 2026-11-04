@@ -146,10 +146,11 @@ describe('processFile', () => {
 
         const data = (await run()).extractedData;
 
-        assert.equal(data.tiene_errores, true);
-        assert.equal(data.estado_procesamiento, 'error');
+        assert.equal(data.estado_procesamiento, 'incompleto');
+        assert.equal('tiene_errores' in data, false);
+        assert.equal('errores_bloqueantes' in data, false);
         assert.match(data.advertencias.join(' '), /Extraccion de caratula incompleta/);
-        assert.match(data.errores_bloqueantes.join(' '), /Caratula/);
+        assert.match(data.motivos_incompleto.join(' '), /Caratula/);
     });
 
     it('acepta SIREFO de una pagina con adjunto sin R y conserva la referencia; otros faltantes siguen siendo errores', async () => {
@@ -164,7 +165,7 @@ describe('processFile', () => {
             mockOpenAI([externalAdjunto], { 1: { text: sirefoCover } });
             const sirefo = (await run(onePageTiff)).extractedData;
             assert.equal(sirefo.es_sirefo, true);
-            assert.equal(sirefo.tiene_errores, false);
+            assert.equal(sirefo.estado_procesamiento, 'completo');
             assert.deepEqual(sirefo.documentos_adjuntos, [externalAdjunto]);
             assert.equal(sirefo.codigos_no_encontrados, undefined);
             assert.match(sirefo.advertencias.join(' '), /no incluido/);
@@ -172,14 +173,12 @@ describe('processFile', () => {
             mockOpenAI([externalAdjunto], { 1: { text: COVER } });
             const ordinary = (await run(onePageTiff)).extractedData;
             assert.equal(ordinary.es_sirefo, false);
-            assert.equal(ordinary.tiene_errores, false);
-            assert.equal(ordinary.requiere_revision, true);
+            assert.equal(ordinary.estado_procesamiento, 'incompleto');
             assert.deepEqual(ordinary.codigos_no_encontrados, ['SIN_CODIGO']);
 
             mockOpenAI(['R-12345'], { 1: { text: sirefoCover } });
             const missingCode = (await run(onePageTiff)).extractedData;
-            assert.equal(missingCode.tiene_errores, false);
-            assert.equal(missingCode.requiere_revision, true);
+            assert.equal(missingCode.estado_procesamiento, 'incompleto');
             assert.deepEqual(missingCode.codigos_no_encontrados, ['R-12345']);
         } finally {
             fs.rmSync(fixtureDir, { recursive: true, force: true });
@@ -204,7 +203,7 @@ describe('processFile', () => {
         const data = result.extractedData;
         const ocrPages = new Set(calls.ocr.map(call => call.page));
 
-        assert.equal(data.tiene_errores, false);
+        assert.equal(data.estado_procesamiento, 'completo');
         assert.deepEqual(data.ubicacion_adjuntos.map(a => [a.pagina, a.id_buscado, a.paginas_continuacion]), [
             [2, 'R-12345', 1],
             [4, 'R-54321', 1]
@@ -250,7 +249,7 @@ describe('processFile', () => {
         const data = result.extractedData;
         const sent = calls.extractTexts.join('\n');
 
-        assert.equal(data.tiene_errores, false);
+        assert.equal(data.estado_procesamiento, 'completo');
         // 12 paginas despues del sello: 11 con texto y la 8 en blanco.
         assert.deepEqual(data.ubicacion_adjuntos.map(a => [a.pagina, a.paginas_continuacion]), [[2, 11]]);
         assert.ok([3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14].every(page => sent.includes(`Fila ${page}.`)));
@@ -269,8 +268,7 @@ describe('processFile', () => {
 
         const result = await run(inkFixture);
 
-        assert.equal(result.extractedData.tiene_errores, true);
-        assert.equal(result.extractedData.estado_procesamiento, 'error');
+        assert.equal(result.extractedData.estado_procesamiento, 'incompleto');
         assert.equal(result.errors, 1);
         assert.equal(calls.id.includes(3), false);
         assert.equal(calls.ocr.filter(call => call.page === 3).length, 2);
@@ -304,7 +302,6 @@ describe('processFile', () => {
 
         const data = (await run(inkFixture)).extractedData;
 
-        assert.equal(data.tiene_errores, false);
         assert.equal(data.estado_procesamiento, 'completo');
         assert.equal(data.ubicacion_adjuntos[0].juez, 'Juan Perez');
         assert.match(data.advertencias.join(' '), /juez o juzgado escrito distinto entre paginas: R-12345/);
@@ -327,14 +324,13 @@ describe('processFile', () => {
 
         const data = (await run(inkFixture)).extractedData;
 
-        assert.equal(data.tiene_errores, false);
-        assert.equal(data.requiere_revision, true);
-        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.estado_procesamiento, 'incompleto');
+        assert.equal('requiere_revision' in data, false);
         assert.equal(data.ubicacion_adjuntos[0]._error, undefined);
         assert.match(data.ubicacion_adjuntos[0]._revision, /juez/);
-        assert.match(data.motivos_revision.join(' '), /Carlos Gomez/);
+        assert.match(data.motivos_incompleto.join(' '), /Carlos Gomez/);
         assert.match(data.advertencias.join(' '), /Campos del mismo proceso contradictorios entre fragmentos: juez/);
-        assert.match(progressLines.join(' '), /\[AVANCE\].*REQUIERE REVISION.*datos obtenidos/);
+        assert.match(progressLines.join(' '), /\[AVANCE\].*INCOMPLETO.*datos obtenidos/);
         assert.match(progressLines.join(' '), /\[RESULTADO-PARCIAL\].*Carlos Gomez/);
     });
 
@@ -348,7 +344,7 @@ describe('processFile', () => {
         const result = await run(speckledFixture);
 
         assert.equal(result.errors, 0);
-        assert.equal(result.extractedData.tiene_errores, false);
+        assert.equal(result.extractedData.estado_procesamiento, 'completo');
         assert.equal(calls.ocr.filter(call => call.page === 3).length, 2);
     });
 
@@ -380,8 +376,7 @@ describe('processFile', () => {
         const result = await run(inkFixture);
         const data = result.extractedData;
 
-        assert.equal(data.tiene_errores, false);
-        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.estado_procesamiento, 'incompleto');
         assert.deepEqual(data.paginas_documento_no_identificado, [{ pagina: 3, identificador: '999/2025' }]);
         assert.doesNotMatch(result.visionText, /Documento independiente sin sello R/);
     });
@@ -395,7 +390,7 @@ describe('processFile', () => {
 
         const result = await run(inkFixture);
 
-        assert.equal(result.extractedData.tiene_errores, false);
+        assert.equal(result.extractedData.estado_procesamiento, 'completo');
         assert.equal(result.extractedData.paginas_documento_no_identificado, undefined);
         assert.match(result.visionText, /PAGINA 3 \/ 3 - CONTINUACION DE R-12345/);
     });
@@ -409,7 +404,7 @@ describe('processFile', () => {
 
         const data = (await run(inkFixture)).extractedData;
 
-        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.estado_procesamiento, 'incompleto');
         assert.deepEqual(data.paginas_documento_no_identificado, [
             { pagina: 3, identificador: 'OFICIO sin identificador legible' }
         ]);
@@ -424,7 +419,7 @@ describe('processFile', () => {
 
         const data = (await run(inkFixture)).extractedData;
 
-        assert.equal(data.tiene_errores, false);
+        assert.equal(data.estado_procesamiento, 'completo');
         assert.equal(data.paginas_documento_no_identificado, undefined);
         assert.equal(data.ubicacion_adjuntos[0].paginas_continuacion, 1);
     });
@@ -439,7 +434,7 @@ describe('processFile', () => {
         const result = await run();
         const data = result.extractedData;
 
-        assert.equal(data.tiene_errores, false);
+        assert.equal(data.estado_procesamiento, 'completo');
         assert.deepEqual(data.ubicacion_adjuntos.map(a => [a.pagina, a.id_buscado, a.id_encontrado]), [
             [2, 'R-12345', 'R-12345'],
             [3, 'R-54321', 'R-54321']
@@ -474,8 +469,7 @@ describe('processFile', () => {
 
         const data = (await run()).extractedData;
 
-        assert.equal(data.tiene_errores, false);
-        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.estado_procesamiento, 'incompleto');
         assert.deepEqual(data.codigos_no_verificados, [
             { pagina: 2, esperado: 'R-12345', lectura_visual: 'R-12346' }
         ]);
@@ -498,7 +492,7 @@ describe('processFile', () => {
         const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-diagnostic-test-'));
         try {
             const data = (await processFile(fixture, outputDir, { diagnostic: true })).extractedData;
-            assert.equal(data.estado_procesamiento, 'requiere_revision');
+            assert.equal(data.estado_procesamiento, 'incompleto');
             assert.equal(data._auditoria.diagnostico_sin_api, true);
             assert.equal(data._auditoria.identificaciones_sin_cache, 1);
             assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
@@ -516,7 +510,7 @@ describe('processFile', () => {
 
         const data = (await run()).extractedData;
 
-        assert.equal(data.tiene_errores, false);
+        assert.equal(data.estado_procesamiento, 'completo');
         assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, true);
         assert.equal(data.ubicacion_adjuntos[0].codigo_lectura_visual, 'R-12346');
         assert.equal(data.ubicacion_adjuntos[0].codigo_lectura_adicional, 'R-12345');
@@ -530,7 +524,7 @@ describe('processFile', () => {
         });
 
         const data = (await run()).extractedData;
-        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.estado_procesamiento, 'incompleto');
         assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
         assert.equal(data.ubicacion_adjuntos[0].id_encontrado, 'R-12346');
         assert.equal(data.ubicacion_adjuntos[0].confianza, 0.8);
@@ -578,13 +572,13 @@ describe('processFile', () => {
             });
 
             const otherTiff = (await run(longFixture)).extractedData;
-            assert.equal(otherTiff.estado_procesamiento, 'requiere_revision');
+            assert.equal(otherTiff.estado_procesamiento, 'incompleto');
             assert.equal(otherTiff.ubicacion_adjuntos[0].codigo_verificado, false);
 
             fs.appendFileSync(config.manualCodeConfirmationsFile,
                 `${JSON.stringify({ ...entry, codigo: 'R-12346' })}\n`);
             const conflicting = (await run()).extractedData;
-            assert.equal(conflicting.estado_procesamiento, 'requiere_revision');
+            assert.equal(conflicting.estado_procesamiento, 'incompleto');
             assert.equal(conflicting.ubicacion_adjuntos[0].codigo_verificado, false);
             assert.deepEqual(conflicting._auditoria.confirmaciones_manuales, []);
         } finally {
@@ -599,7 +593,7 @@ describe('processFile', () => {
         });
 
         const data = (await run()).extractedData;
-        assert.equal(data.estado_procesamiento, 'requiere_revision');
+        assert.equal(data.estado_procesamiento, 'incompleto');
         assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
         assert.match(data.ubicacion_adjuntos[0]._advertencia_match_aproximado, /Revisar manualmente/);
     });
@@ -628,7 +622,7 @@ describe('processFile', () => {
         ]);
         assert.equal(calls.ocr.filter(call => call.page === 3).length, 1);
         assert.equal(result.errors, 1);
-        assert.equal(data.tiene_errores, true);
+        assert.equal(data.estado_procesamiento, 'incompleto');
         assert.deepEqual(data.ubicacion_adjuntos.map(a => a.id_buscado), ['R-12345']);
         assert.deepEqual(data.codigos_no_encontrados, ['R-54321']);
     });

@@ -229,20 +229,14 @@ async function processPendingFiles() {
                         }
 
                         logger.success(`[OK] ${filename} -> processed/`);
-                    } else if (data.estado_procesamiento === 'requiere_revision') {
+                    } else if (data.estado_procesamiento === 'incompleto') {
                         moveFile(filePath, config.errorDir);
-                        const reasons = data.motivos_revision || ['Validacion pendiente'];
-                        logger.warn(`[REVISION] ${filename}: ${reasons.length} punto(s) pendiente(s). Solo el TIFF se mueve a error/; no es un resultado aprobado.`);
+                        const reasons = data.motivos_incompleto || ['Procesamiento sin terminar'];
+                        logger.warn(`[INCOMPLETO] ${filename}: ${reasons.length} punto(s) pendiente(s). Solo el TIFF se mueve a ${config.errorDir}; no es un resultado aprobado.`);
                         for (const reason of reasons) logger.warn(`  [PENDIENTE] ${reason}`);
-                    } else if (result.success > 0 && data.estado_procesamiento === 'error') {
-                        moveFile(filePath, config.errorDir);
-                        const reasons = data.errores_bloqueantes || ['Error de procesamiento'];
-                        logger.error(`[ERROR] ${filename}: ${reasons.length} motivo(s) bloqueante(s). Solo el TIFF se mueve a error/.`);
-                        for (const reason of reasons) logger.error(`  [MOTIVO] ${reason}`);
-                        for (const reason of data.motivos_revision || []) logger.warn(`  [PENDIENTE] ${reason}`);
                     } else {
                         moveFile(filePath, config.errorDir);
-                        logger.error(`Todas las páginas fallaron para ${filename}. Solo el TIFF se mueve a error/.`);
+                        logger.warn(`[INCOMPLETO] ${filename}: no se obtuvo un resultado completo. Solo el TIFF se mueve a ${config.errorDir}.`);
                     }
 
                 } catch (err) {
@@ -268,7 +262,7 @@ async function processPendingFiles() {
                         continue;
                     }
 
-                    logger.error(`Error fatal procesando ${filename}: ${err.message}`);
+                    logger.warn(`[INCOMPLETO] ${filename}: procesamiento interrumpido: ${err.message}`);
                     try {
                         moveFile(filePath, config.errorDir);
                     } catch { /* ignore */ }
@@ -315,7 +309,7 @@ function startWatcher() {
     logger.info(`   Input:     ${config.inputDir}`);
     logger.info(`   Output:    ${config.outputDir}`);
     logger.info(`   Processed: ${config.processedDir}`);
-    logger.info(`   Error:     ${config.errorDir}`);
+    logger.info(`   Incompletos: ${config.errorDir}`);
     logger.info(`   Caché API: ${config.ocrCacheDir || 'desactivada (configura OCR_CACHE_DIR en .env)'}`);
     logger.info(`   Confirmaciones R: ${config.manualCodeConfirmationsFile || 'desactivadas (configura MANUAL_CODE_CONFIRMATIONS_FILE en .env)'}`);
     logger.info(`   Intervalo: ${config.watchIntervalMs / 1000}s`);

@@ -18,10 +18,7 @@ if (!tiffPath || (option && option !== '--full') || process.argv.length > 4) {
         const result = await processFile(tiffPath, tempDir, { diagnostic: true });
         const data = result.extractedData;
         console.log(`Diagnostico terminado: ${data.ubicacion_adjuntos?.length || 0} adjunto(s) con datos parciales.`);
-        for (const reason of data.errores_bloqueantes || []) {
-            console.log(`ERROR: ${reason}`);
-        }
-        for (const reason of data.motivos_revision || []) {
+        for (const reason of data.motivos_incompleto || []) {
             if (!reason.startsWith('Diagnostico de cache:')) console.log(`PENDIENTE: ${reason}`);
         }
         if (option === '--full') console.log(JSON.stringify(data, null, 2));

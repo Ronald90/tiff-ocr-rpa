@@ -754,7 +754,7 @@ async function locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos, diag
             const wasPending = pending.length > 0;
 
             if (page.error) {
-                logger.error(`  [ERROR] Pagina ${page.pageNum}/${numPages}: ${page.error.message}`);
+                logger.warn(`  [INCOMPLETO] Pagina ${page.pageNum}/${numPages}: ${page.error.message}`);
                 errorCount++;
             } else if (!page.code) {
                 logger.info(`  [ID] Pagina ${page.pageNum}/${numPages} (${page.sizeKB} KB) - Sin codigo`);
@@ -1288,9 +1288,8 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
                     const progress = `[AVANCE] ${adjuntosTerminados}/${groups.length} ${entry.id_buscado}`;
                     if (entry._error || entry._revision) {
                         const reason = entry._error || entry._revision;
-                        const message = `${progress} ${entry._error ? 'ERROR' : 'REQUIERE REVISION'}: ${reason}${entry._conflictos?.length ? `; ${entry._conflictos.join('; ')}` : ''}; datos obtenidos ${JSON.stringify(data)}${entry._fragmentos_pendientes ? `; ${entry._fragmentos_pendientes} fragmento(s) sin consultar` : ''}`;
-                        if (entry._error) logger.error(message);
-                        else logger.warn(message);
+                        const message = `${progress} INCOMPLETO: ${reason}${entry._conflictos?.length ? `; ${entry._conflictos.join('; ')}` : ''}; datos obtenidos ${JSON.stringify(data)}${entry._fragmentos_pendientes ? `; ${entry._fragmentos_pendientes} fragmento(s) sin consultar` : ''}`;
+                        logger.warn(message);
                         logger.info(`[RESULTADO-PARCIAL] ${entry.id_buscado}: ${JSON.stringify(entry)}`);
                     } else {
                         logger.success(`${progress} extraido: ${JSON.stringify(data)}`);
@@ -1299,7 +1298,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
                 } catch (err) {
                     throwIfInsufficientQuota(err, `OpenAI pagina ${page.pageNum}`);
                     adjuntosTerminados++;
-                    logger.error(`[AVANCE] ${adjuntosTerminados}/${groups.length} ${page.match.code} REVISAR: error en pagina ${page.pageNum}/${numPages}: ${err.message}`);
+                    logger.warn(`[AVANCE] ${adjuntosTerminados}/${groups.length} ${page.match.code} INCOMPLETO: no se pudo terminar la pagina ${page.pageNum}/${numPages}: ${err.message}`);
                     errorCount++;
                     return null;
                 }
@@ -1465,13 +1464,12 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
         motivosRevision.push(`Codigos no encontrados: ${notFound.map(doc => extractDocCode(doc) || 'SIN_CODIGO').join(', ')}`);
     }
     if (errorCount > 0) {
-        advertencias.push(`${errorCount} pagina(s) con errores de procesamiento`);
-        erroresBloqueantes.push(`${errorCount} pagina(s) con errores de procesamiento`);
+        advertencias.push(`${errorCount} pagina(s) o extraccion(es) sin terminar`);
+        erroresBloqueantes.push(`${errorCount} pagina(s) o extraccion(es) sin terminar`);
     }
 
-    const tieneErrores = erroresBloqueantes.length > 0;
-    const requiereRevision = motivosRevision.length > 0;
-    const estadoProcesamiento = tieneErrores ? 'error' : requiereRevision ? 'requiere_revision' : 'completo';
+    const motivosIncompleto = [...erroresBloqueantes, ...motivosRevision];
+    const estadoProcesamiento = motivosIncompleto.length > 0 ? 'incompleto' : 'completo';
 
     const jsonOutput = {
         archivo_origen: path.basename(tiffPath),
@@ -1479,12 +1477,9 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
         total_paginas: numPages,
         paginas_transcritas: successCount,
         paginas_omitidas: skippedCount,
-        tiene_errores: tieneErrores,
-        requiere_revision: requiereRevision,
         estado_procesamiento: estadoProcesamiento,
         advertencias: advertencias.length > 0 ? advertencias : undefined,
-        errores_bloqueantes: erroresBloqueantes.length > 0 ? erroresBloqueantes : undefined,
-        motivos_revision: motivosRevision.length > 0 ? motivosRevision : undefined,
+        motivos_incompleto: motivosIncompleto.length > 0 ? motivosIncompleto : undefined,
         ...extractedData,
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
         codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined,
@@ -1532,10 +1527,8 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
 
     if (diagnostic) {
         logger.info(`[DIAGNOSTICO] Reconstruccion terminada para ${path.basename(tiffPath)} (${elapsedStr}); no se publico ningun resultado.`);
-    } else if (estadoProcesamiento === 'requiere_revision') {
-        logger.warn(`[REVISION] Lectura terminada: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount}/${numPages} paginas transcritas, ${ubicacion_adjuntos.length}/${adjuntos.length} adjuntos localizados, ${adjuntosConRevision.length} adjunto(s) por revisar.`);
-    } else if (tieneErrores) {
-        logger.error(`[ERROR] Procesamiento incompleto: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount}/${numPages} paginas transcritas, ${ubicacion_adjuntos.length}/${adjuntos.length} adjuntos localizados, ${adjuntosConError.length} error(es) de extraccion.`);
+    } else if (estadoProcesamiento === 'incompleto') {
+        logger.warn(`[INCOMPLETO] Lectura terminada: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount}/${numPages} paginas transcritas, ${ubicacion_adjuntos.length}/${adjuntos.length} adjuntos localizados, ${adjuntosConRevision.length} adjunto(s) por revisar, ${adjuntosConError.length} extraccion(es) sin terminar.`);
     } else {
         logger.success(`Completado: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas`);
     }

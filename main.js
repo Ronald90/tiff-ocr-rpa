@@ -32,24 +32,20 @@ try {
     const result = await processFile(tiffPath, outputDir);
 
     console.log('\n' + '='.repeat(60));
-    console.log(`[OK] Completado en ${result.elapsed}`);
-    console.log(`     Exitosas: ${result.success} | Errores: ${result.errors}`);
+    console.log(`[${result.extractedData?.estado_procesamiento === 'completo' ? 'COMPLETO' : 'INCOMPLETO'}] Lectura terminada en ${result.elapsed}`);
+    console.log(`     Páginas leídas: ${result.success} | Fases no terminadas: ${result.errors}`);
     console.log(`     TXT: ${result.outputPath}`);
     console.log(`     JSON: ${result.jsonPath}`);
     console.log('='.repeat(60));
     console.log('\n[DATA] Datos extraídos:');
     console.log(JSON.stringify(result.extractedData, null, 2));
 
-    if (result.extractedData?.estado_procesamiento === 'requiere_revision') {
-        console.warn('\n[REVISION] Lectura terminada con datos por confirmar. El resultado no esta aprobado.');
-        for (const reason of result.extractedData.motivos_revision || []) console.warn(`  [PENDIENTE] ${reason}`);
-        process.exitCode = 2;
-    } else if (result.extractedData?.estado_procesamiento === 'error') {
-        console.error('\n[ERROR] Procesamiento incompleto. Revisa los motivos antes de usarlo.');
-        for (const reason of result.extractedData.errores_bloqueantes || []) console.error(`  [MOTIVO] ${reason}`);
+    if (result.extractedData?.estado_procesamiento === 'incompleto') {
+        console.warn('\n[INCOMPLETO] Lectura terminada con puntos pendientes. El resultado no esta aprobado.');
+        for (const reason of result.extractedData.motivos_incompleto || []) console.warn(`  [PENDIENTE] ${reason}`);
         process.exitCode = 2;
     }
 } catch (err) {
-    logger.error(`Error fatal: ${err.message}`);
+    logger.warn(`[INCOMPLETO] No se pudo terminar el archivo: ${err.message}`);
     process.exit(1);
 }
