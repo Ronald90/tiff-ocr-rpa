@@ -2,6 +2,7 @@ import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import openai from '../openai-client.js';
 import config from '../config.js';
+import logger from '../logger.js';
 import {
     extractAdjuntoFields,
     extractJuezFallback,
@@ -12,8 +13,10 @@ import {
 
 const originalCreate = openai.chat.completions.create;
 const originalChunkChars = config.adjuntoChunkChars;
+const originalInfo = logger.info;
 afterEach(() => {
     openai.chat.completions.create = originalCreate;
+    logger.info = originalInfo;
     config.adjuntoChunkChars = originalChunkChars;
 });
 
@@ -214,6 +217,18 @@ describe('extraccion de adjuntos largos', () => {
         assert.equal(result.nro_cite, '623/2025');
         assert.equal(result.ciudad_cite, 'Oruro');
         assert.equal(result.fecha_cite, '');
+    });
+
+    it('recupera el cite por regex sin escribir su valor en el log', async () => {
+        const logLines = [];
+        logger.info = message => { logLines.push(message); originalInfo(message); };
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ demandados: [] }) } }] });
+
+        const result = await extractAdjuntoFields('R-241594\nOficio judicial de prueba. CITE 777/2025. Demandante Persona de Prueba.');
+
+        assert.equal(result.nro_cite, '777/2025');
+        assert.ok(logLines.some(line => line.includes('nro_cite recuperado por regex')));
+        assert.equal(logLines.some(line => line.includes('777/2025')), false);
     });
 
     it('no rellena fecha, ciudad ni cite desde una actuacion distinta', async () => {

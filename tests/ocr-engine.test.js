@@ -384,6 +384,23 @@ describe('processFile', () => {
         }
     });
 
+    it('lista los codigos no encontrados sin escribir la descripcion de la caratula en el log', async () => {
+        const logLines = [];
+        logger.info = message => { logLines.push(message); originalInfo(message); };
+        logger.warn = message => { logLines.push(message); originalWarn(message); };
+        mockOpenAI(['R-12345', 'R-54321 DE NOMBRE RESERVADO'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: CONTINUACION }
+        });
+
+        const data = (await run()).extractedData;
+
+        assert.deepEqual(data.codigos_no_encontrados, ['R-54321']);
+        assert.ok(logLines.some(line => line.includes('x R-54321')));
+        assert.equal(logLines.some(line => line.includes('NOMBRE RESERVADO')), false);
+    });
+
     it('acepta como en blanco una pagina con motas del escaner y OCR vacio', async () => {
         const calls = mockOpenAI(['R-12345'], {
             1: { text: COVER },

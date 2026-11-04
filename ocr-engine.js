@@ -11,7 +11,7 @@ import {
     TruncatedOutputError
 } from './openai-errors.js';
 import { extractFields } from './extractor.js';
-import { extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
+import { ADJUNTO_FIELD_NAMES, extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
 import { withCacheOnly, withOpenAIUsage } from './completion-cache.js';
 import { loadManualCodeConfirmations, sha256File } from './manual-code-confirmations.js';
 import {
@@ -41,9 +41,6 @@ const HANDWRITING_CONTRAST = 1.5;
 
 /** Longitud máxima de texto para considerar como rechazo del modelo */
 const REFUSAL_MAX_LENGTH = 200;
-
-/** Campos de un adjunto cuya presencia (no su valor) se informa en [AVANCE] */
-const PROGRESS_FIELDS = ['nro_cite', 'fecha_cite', 'ciudad_cite', 'demandante', 'juez', 'juzgado', 'monto_retenido', 'moneda'];
 
 // ── Cargar prompts desde archivos externos ────────────────────────────
 
@@ -1288,7 +1285,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
                     // rpa.log es texto plano y persiste: el avance nombra los
                     // campos obtenidos, nunca sus valores. Los valores quedan
                     // solo en el JSON.
-                    const obtenidos = PROGRESS_FIELDS.filter(key => entry[key]);
+                    const obtenidos = ADJUNTO_FIELD_NAMES.filter(key => key !== 'demandados' && entry[key]);
                     const summary = `pagina ${entry.pagina}, ${entry.demandados?.length || 0} demandado(s), campos: ${obtenidos.join(', ') || 'ninguno'}`;
                     const progress = `[AVANCE] ${adjuntosTerminados}/${groups.length} ${entry.id_buscado}`;
                     if (entry._error || entry._revision) {
