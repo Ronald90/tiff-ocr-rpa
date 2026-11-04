@@ -50,8 +50,10 @@ Si vuelves a colocar el mismo TIFF en `input/`, el watcher lo procesa de nuevo;
 el historial registra los intentos y no impide validar cambios. Si ya existe
 un resultado con el mismo nombre en `output/`, el nuevo recibe un sufijo de tiempo.
 En modo RPA, `output/` contiene solo los TXT y JSON de TIFF completos. Si un
-TIFF queda incompleto, la carpeta configurada conserva solo el original, sin
-TXT ni JSON.
+TIFF queda incompleto, la carpeta configurada conserva el TIFF junto con el TXT
+y JSON parciales en una subcarpeta propia de ese intento. El JSON indica
+`estado_procesamiento: "incompleto"` y enumera `motivos_incompleto`; el TXT marca
+ese estado y conserva también las páginas transcritas sin adjunto asignado.
 Durante la extraccion, cada `[AVANCE]` muestra el codigo R, los campos ya
 obtenidos y cuántos adjuntos terminaron. Si hay un conflicto, muestra los dos
 valores y el fragmento donde apareció. Al final, `[RESUMEN]` muestra el avance
@@ -59,12 +61,12 @@ alcanzado y `[PENDIENTE]` indica qué impidió completar el archivo. Estas linea
 quedan en `rpa.log` para
 revisarlas sin repetir llamadas a la API. `[RESULTADO-PARCIAL]` conserva en el
 log todos los campos obtenidos de cada adjunto pendiente. Los datos parciales
-de un TIFF incompleto se muestran en el log, pero no se publican como definitivos.
+se guardan para revisión, separados de los resultados definitivos.
 Si el TIFF ya se procesó y `OCR_CACHE_DIR` está configurado, puedes volver a
 ver los campos sin gastar tokens ni mover el archivo:
 
 ```bash
-npm run diagnose-cache -- error/archivo.tif
+npm run diagnose-cache -- error/carpeta_incompleto_xxx/archivo.tif
 # Agrega --full para imprimir el JSON completo en la terminal, sin guardarlo.
 ```
 
@@ -91,18 +93,19 @@ principal; las páginas adicionales aportan demandados, juez, juzgado,
 NUREJ/CUD y montos retenidos cuando pertenecen al mismo proceso, pero no
 reemplazan el cite, la fecha ni el demandante del principal. Los campos vacíos
 se dejan vacíos cuando solo figuran en un documento de otro proceso.
-Si falla la extracción de alguna parte, el TIFF se envía a `error/` y no se
-publican TXT ni JSON. Un monto o un demandado que difieren de verdad entre
-páginas también envían el TIFF a `error/`; los montos se comparan por su valor
+Si la extracción de alguna parte no termina, el TIFF y sus resultados parciales
+se conservan en la carpeta configurada, fuera de `output/`. Un monto o un
+demandado que difieren de verdad entre páginas también dejan el TIFF incompleto;
+los montos se comparan por su valor
 (`1.000,00`, `1000` y `Bs. 1.000.-` son iguales) y la misma persona con otra
 resolución es otra fila. Una fila sin resolución solo se une si su monto la
-vincula de forma única; si sigue siendo ambigua, el TIFF va a `error/`.
+vincula de forma única; si sigue siendo ambigua, el TIFF queda incompleto.
 Las variantes claras de título profesional u ordinal de juez o juzgado se
 conservan con una advertencia. Una persona o juzgado realmente distinto
-envía el TIFF a `error/` para revisión.
+deja el TIFF incompleto para revisión.
 Una respuesta OCR vacía se repite una vez. Solo se acepta como página en blanco
 si no queda ningún píxel oscuro después de quitar motas con la mediana
-configurada. Si queda tinta y el segundo OCR sigue vacío, el TIFF va a `error/`.
+configurada. Si queda tinta y el segundo OCR sigue vacío, el TIFF queda incompleto.
 Un encabezado de CITE, oficio o carta
 circular con identificador distinto dentro de una supuesta continuación se
 marca para revisión. Un título aislado de oficio o carta circular al inicio de
@@ -136,7 +139,7 @@ Un código R mencionado y no localizado sigue requiriendo revisión.
 ├── input/              Archivos TIFF a procesar
 ├── output/             Resultados (TXT + JSON)
 ├── processed/          TIFFs procesados
-└── error/              TIFFs incompletos; nombre heredado de ERROR_DIR
+└── error/              Carpetas por intento con TIFF, TXT y JSON parciales
 ```
 
 ## Campos extraídos (JSON)
@@ -158,6 +161,7 @@ Un código R mencionado y no localizado sigue requiriendo revisión.
 | `modificaciones` | array | Menciones de modificaciones normativas |
 | `estado_procesamiento` | string | `completo` o `incompleto`; solo `completo` se publica en `output/` en modo RPA |
 | `motivos_incompleto` | array | Razones concretas por las que el TIFF no quedó completo |
+| `paginas_sin_asignar` | array | Texto OCR de páginas leídas que no se pudieron vincular con un adjunto en un TIFF incompleto |
 | `ubicacion_adjuntos[].codigo_verificado` | boolean | Indica si una lectura visual o confirmación humana del TIFF exacto confirmó el código R esperado |
 | `ubicacion_adjuntos[].codigo_verificacion_fuente` | string | `vision` o `manual`; la auditoría registra las confirmaciones humanas por página |
 

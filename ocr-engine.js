@@ -1369,7 +1369,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
     stream.write(`Archivo: ${path.basename(tiffPath)}\n`);
     stream.write(`Fecha: ${now}\n`);
     stream.write(`Total de paginas: ${numPages}\n`);
-    stream.write(`Paginas transcritas: ${successCount} | Omitidas: ${skippedCount} | Errores: ${errorCount}\n`);
+    stream.write(`Paginas transcritas: ${successCount} | Omitidas: ${skippedCount} | Fases sin terminar: ${errorCount}\n`);
     stream.write('='.repeat(60) + '\n\n');
 
     // Paginas de caratula
@@ -1398,8 +1398,8 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
     const elapsedStr = formatTime(elapsed);
 
     stream.write('='.repeat(60) + '\n');
-    stream.write(`Completado en ${elapsedStr}\n`);
-    stream.write(`Transcritas: ${successCount} | Omitidas: ${skippedCount} | Errores: ${errorCount}\n`);
+    stream.write(`Lectura terminada en ${elapsedStr}\n`);
+    stream.write(`Transcritas: ${successCount} | Omitidas: ${skippedCount} | Fases sin terminar: ${errorCount}\n`);
     if (notFound.length > 0) {
         stream.write('\nCODIGOS NO ENCONTRADOS:\n');
         for (const doc of notFound) {
@@ -1470,6 +1470,22 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
 
     const motivosIncompleto = [...erroresBloqueantes, ...motivosRevision];
     const estadoProcesamiento = motivosIncompleto.length > 0 ? 'incompleto' : 'completo';
+    const paginasIncluidas = new Set(coverTexts.map((_, index) => index));
+    for (const { page, continuation } of groups) {
+        for (const item of [page, ...continuation]) paginasIncluidas.add(item.pageIndex);
+    }
+    const paginasSinAsignar = estadoProcesamiento === 'incompleto'
+        ? pages.filter(page => page && !page.error && page.text?.trim() && !paginasIncluidas.has(page.pageIndex))
+            .map(page => ({ pagina: page.pageNum, texto: page.text }))
+        : [];
+
+    fs.appendFileSync(outputPath, `\nESTADO DE PROCESAMIENTO: ${estadoProcesamiento.toUpperCase()}\n`);
+    if (paginasSinAsignar.length > 0) {
+        fs.appendFileSync(outputPath, '\nPAGINAS TRANSCRITAS SIN ADJUNTO ASIGNADO:\n');
+        for (const page of paginasSinAsignar) {
+            fs.appendFileSync(outputPath, `\nPAGINA ${page.pagina} / ${numPages}\n${page.texto}\n`);
+        }
+    }
 
     const jsonOutput = {
         archivo_origen: path.basename(tiffPath),
@@ -1482,6 +1498,7 @@ async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {})
         motivos_incompleto: motivosIncompleto.length > 0 ? motivosIncompleto : undefined,
         ...extractedData,
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
+        paginas_sin_asignar: paginasSinAsignar.length > 0 ? paginasSinAsignar : undefined,
         codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined,
         codigos_no_verificados: codigosNoVerificados.length > 0 ? codigosNoVerificados : undefined,
         paginas_documento_no_identificado: paginasDocumentoNoIdentificado.length > 0 ? paginasDocumentoNoIdentificado : undefined,

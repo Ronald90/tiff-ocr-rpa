@@ -322,7 +322,8 @@ describe('processFile', () => {
                 ? completion(JSON.stringify({ demandados: [], juez: 'Carlos Gomez', juzgado: '', tipo_documento_respaldo: '', nro_documento_respaldo: '', monto_retenido: '', moneda: '' }))
                 : mocked(request, options);
 
-        const data = (await run(inkFixture)).extractedData;
+        const result = await run(inkFixture);
+        const data = result.extractedData;
 
         assert.equal(data.estado_procesamiento, 'incompleto');
         assert.equal('requiere_revision' in data, false);
@@ -330,6 +331,7 @@ describe('processFile', () => {
         assert.match(data.ubicacion_adjuntos[0]._revision, /juez/);
         assert.match(data.motivos_incompleto.join(' '), /Carlos Gomez/);
         assert.match(data.advertencias.join(' '), /Campos del mismo proceso contradictorios entre fragmentos: juez/);
+        assert.match(result.visionText, /ESTADO DE PROCESAMIENTO: INCOMPLETO/);
         assert.match(progressLines.join(' '), /\[AVANCE\].*INCOMPLETO.*datos obtenidos/);
         assert.match(progressLines.join(' '), /\[RESULTADO-PARCIAL\].*Carlos Gomez/);
     });
@@ -378,7 +380,8 @@ describe('processFile', () => {
 
         assert.equal(data.estado_procesamiento, 'incompleto');
         assert.deepEqual(data.paginas_documento_no_identificado, [{ pagina: 3, identificador: '999/2025' }]);
-        assert.doesNotMatch(result.visionText, /Documento independiente sin sello R/);
+        assert.match(result.visionText, /PAGINAS TRANSCRITAS SIN ADJUNTO ASIGNADO:[\s\S]*Documento independiente sin sello R/);
+        assert.deepEqual(data.paginas_sin_asignar, [{ pagina: 3, texto: 'OFICIO Nro. 999/2025\nDocumento independiente sin sello R.' }]);
     });
 
     it('mantiene una continuacion que repite el mismo CITE', async () => {

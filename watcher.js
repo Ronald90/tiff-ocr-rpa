@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import config from './config.js';
 import logger from './logger.js';
 import { processFile } from './ocr-engine.js';
+import { preserveIncompleteOutputs } from './incomplete-result.js';
 import { isInsufficientQuotaError } from './openai-errors.js';
 import { isFileStable } from './utils.js';
 
@@ -193,6 +194,7 @@ async function processPendingFiles() {
                 nextIndex++;
                 const { filename, filePath, fileKey } = pending[idx];
                 let stagingDir = null;
+                let incompleteBundleDir = null;
                 const publishedPaths = [];
 
                 logger.info(`  [WORKER ${workerId}]: procesando ${filename}`);
@@ -230,9 +232,13 @@ async function processPendingFiles() {
 
                         logger.success(`[OK] ${filename} -> processed/`);
                     } else if (data.estado_procesamiento === 'incompleto') {
-                        moveFile(filePath, config.errorDir);
+                        incompleteBundleDir = preserveIncompleteOutputs(
+                            stagingDir, config.errorDir, filename, result.outputPath, result.jsonPath
+                        );
+                        stagingDir = null;
+                        moveFile(filePath, incompleteBundleDir);
                         const reasons = data.motivos_incompleto || ['Procesamiento sin terminar'];
-                        logger.warn(`[INCOMPLETO] ${filename}: ${reasons.length} punto(s) pendiente(s). Solo el TIFF se mueve a ${config.errorDir}; no es un resultado aprobado.`);
+                        logger.warn(`[INCOMPLETO] ${filename}: ${reasons.length} punto(s) pendiente(s). TIFF, TXT y JSON parciales guardados en ${incompleteBundleDir}; no son resultados aprobados.`);
                         for (const reason of reasons) logger.warn(`  [PENDIENTE] ${reason}`);
                     } else {
                         moveFile(filePath, config.errorDir);
@@ -263,6 +269,7 @@ async function processPendingFiles() {
                     }
 
                     logger.warn(`[INCOMPLETO] ${filename}: procesamiento interrumpido: ${err.message}`);
+                    if (incompleteBundleDir) logger.warn(`[PARCIAL] Resultados recuperables en ${incompleteBundleDir}`);
                     try {
                         moveFile(filePath, config.errorDir);
                     } catch { /* ignore */ }
