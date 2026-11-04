@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import logger from '../logger.js';
-import { cacheCompletions, withOpenAIUsage } from '../completion-cache.js';
+import { cacheCompletions, withCacheOnly, withOpenAIUsage } from '../completion-cache.js';
 
 const dirs = [];
 afterEach(() => {
@@ -53,6 +53,20 @@ it('no reutiliza una verificación con cacheMode off', async () => {
     assert.equal((await cached(request, { cacheMode: 'off' })).choices[0].message.content, 'lectura 2');
     assert.equal((await cached(request)).choices[0].message.content, 'lectura 1');
     assert.equal(calls, 2);
+});
+
+it('el diagnostico solo lee cache y nunca consulta la API ante faltantes', async () => {
+    const dir = cacheDir();
+    let calls = 0;
+    const cached = cacheCompletions(async () => completion(`respuesta ${++calls}`), dir);
+    const request = { model: 'modelo', messages: [{ role: 'user', content: 'imagen' }] };
+
+    await assert.rejects(withCacheOnly(() => cached(request)), /Diagnostico sin API/);
+    assert.equal(calls, 0);
+    await cached(request);
+    assert.equal((await withCacheOnly(() => cached(request))).choices[0].message.content, 'respuesta 1');
+    await assert.rejects(withCacheOnly(() => cached(request, { cacheMode: 'off' })), /Diagnostico sin API/);
+    assert.equal(calls, 1);
 });
 
 it('no guarda respuestas truncadas ni JSON inválido y evita solicitudes simultáneas duplicadas', async () => {

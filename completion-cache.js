@@ -6,6 +6,20 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import logger from './logger.js';
 
 const usageContext = new AsyncLocalStorage();
+const cacheOnlyContext = new AsyncLocalStorage();
+
+export class CacheOnlyMissError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'CacheOnlyMissError';
+        this.code = 'offline_cache_miss';
+    }
+}
+
+/** Ejecuta un diagnostico sin permitir solicitudes nuevas al proveedor. */
+export function withCacheOnly(work) {
+    return cacheOnlyContext.run(true, work);
+}
 
 function recordRequest(model, usage) {
     const summary = usageContext.getStore();
@@ -77,7 +91,9 @@ export function cacheCompletions(create, cacheDir) {
 
     return async (request, options = {}) => {
         const { cacheMode, ...providerOptions } = options;
+        const cacheOnly = cacheOnlyContext.getStore() === true;
         const run = async () => {
+            if (cacheOnly) throw new CacheOnlyMissError('Diagnostico sin API: respuesta no disponible en la cache local');
             let response;
             try {
                 response = await create(request, providerOptions);
@@ -98,8 +114,13 @@ export function cacheCompletions(create, cacheDir) {
                 recordReuse();
                 return saved;
             }
+            if (cacheOnly) throw new CacheOnlyMissError(`Diagnostico sin API: entrada de cache invalida (${key.slice(0, 12)})`);
             logger.warn(`[CACHE] Entrada inválida para ${key.slice(0, 12)}; se consultará la API.`);
         } catch (err) {
+            if (cacheOnly) {
+                if (err instanceof CacheOnlyMissError) throw err;
+                throw new CacheOnlyMissError(`Diagnostico sin API: respuesta no disponible en cache (${key.slice(0, 12)}): ${err.message}`);
+            }
             if (err.code !== 'ENOENT') logger.warn(`[CACHE] No se pudo leer ${key.slice(0, 12)}: ${err.message}`);
         }
 

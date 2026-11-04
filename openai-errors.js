@@ -87,6 +87,7 @@ export function isInsufficientQuotaError(err) {
  * @returns {boolean}
  */
 export function isRetryableOpenAIError(err) {
+    if (err?.code === 'offline_cache_miss') return false;
     if (isInsufficientQuotaError(err) || err instanceof TruncatedOutputError) return false;
 
     const status = err?.status;
@@ -106,6 +107,9 @@ export function toOpenAIQuotaError(err, context = 'OpenAI') {
 }
 
 export function throwIfInsufficientQuota(err, context) {
+    // En diagnostico local, un fallo de cache debe cortar el trabajo al
+    // instante y nunca disparar reintentos ni una consulta al proveedor.
+    if (err?.code === 'offline_cache_miss') throw err;
     if (isInsufficientQuotaError(err)) {
         throw toOpenAIQuotaError(err, context);
     }

@@ -65,6 +65,27 @@ describe('extraccion de adjuntos largos', () => {
         assert.match(result._error, /Fragmento 2\/\d+: 400 Invalid request/);
     });
 
+    it('conserva campos ya extraidos si falla un fragmento posterior', async () => {
+        config.adjuntoChunkChars = 24000;
+        const principal = 'R-247986\nCITE 123/2025\nDEMANDANTE: PERSONA DE PRUEBA\n';
+        const continuacion = `${'Texto de continuacion.\n'.repeat(50)}`;
+        let calls = 0;
+        openai.chat.completions.create = async () => {
+            calls++;
+            if (calls === 2) throw Object.assign(new Error('400 Invalid request'), { status: 400 });
+            return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+                nro_cite: '123/2025', juez: 'Juan Perez', demandados: []
+            }) } }] };
+        };
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+
+        assert.equal(calls, 2);
+        assert.equal(result.nro_cite, '123/2025');
+        assert.equal(result.juez, 'Juan Perez');
+        assert.match(result._error, /Fragmento 2\/2/);
+    });
+
     it('conserva los campos del documento principal aunque otro fragmento tenga otro cite', async () => {
         config.adjuntoChunkChars = 24000;
         let calls = 0;
@@ -335,6 +356,24 @@ describe('extraccion de adjuntos largos', () => {
 
         assert.match(result._error, /juez/);
         assert.match(result._error, /juzgado/);
+        assert.ok(result._conflictos.some(value => value.includes('Alberto Llanos Martinez')));
+    });
+
+    it('detiene fragmentos restantes tras una contradiccion de juez y muestra ambos valores', async () => {
+        config.adjuntoChunkChars = 1000;
+        const principal = 'PAGINA R-247986\n[FIRMA]\nJuan Perez\nJUEZ\n';
+        const continuacion = `${'Continuacion del mismo proceso y datos de respaldo.\n'.repeat(80)}`;
+        let calls = 0;
+        openai.chat.completions.create = async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+            juez: ++calls === 1 ? 'Juan Perez' : 'Pedro Lopez', demandados: []
+        }) } }] });
+
+        const result = await extractAdjuntoFields(principal + '\n\n' + continuacion, { primaryText: principal });
+
+        assert.equal(calls, 2);
+        assert.match(result._error, /juez/);
+        assert.match(result._conflictos[0], /"Juan Perez" frente a "Pedro Lopez"/);
+        assert.ok(result._fragmentos_pendientes > 0);
     });
 
     it('reconoce el mismo juzgado aunque el OCR omita palabras o use el ordinal escrito', async () => {

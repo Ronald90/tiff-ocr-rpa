@@ -12,7 +12,7 @@ import {
 } from './openai-errors.js';
 import { extractFields } from './extractor.js';
 import { extractAdjuntoFields, normalizeJuezValue } from './adjunto-extractor.js';
-import { withOpenAIUsage } from './completion-cache.js';
+import { withCacheOnly, withOpenAIUsage } from './completion-cache.js';
 import { loadManualCodeConfirmations, sha256File } from './manual-code-confirmations.js';
 import {
     matchSingleNumber,
@@ -639,7 +639,7 @@ async function runInOrder({ from, to, concurrency, work, onResult, canStart = ()
  * @param {string[]} adjuntos - Documentos adjuntos listados en la carátula
  * @returns {Promise<{pageIndex: number, pageNum: number, sizeKB: string, text: string, code: string|null, codeSource: string|null, error: Error|null}>}
  */
-async function readPage(tiffPath, pageIndex, adjuntos) {
+async function readPage(tiffPath, pageIndex, adjuntos, diagnostic = false) {
     const pageNum = pageIndex + 1;
 
     try {
@@ -666,8 +666,19 @@ async function readPage(tiffPath, pageIndex, adjuntos) {
             return { pageIndex, pageNum, sizeKB, text, code: stampMatch.candidate, codeSource: 'texto', error: null };
         }
 
-        const code = await identifyDocNumber(pngBuffer, pageNum);
-        return { pageIndex, pageNum, sizeKB, text, code, codeSource: code ? 'imagen' : null, error: null };
+        let code;
+        let diagnosticIdUnavailable = false;
+        try {
+            code = await identifyDocNumber(pngBuffer, pageNum);
+        } catch (error) {
+            if (!diagnostic || error?.code !== 'offline_cache_miss') throw error;
+            // Las respuestas negativas NO_ENCONTRADO no se guardan. En una
+            // inspeccion local se omite ese ID; el resultado no se publica.
+            logger.info(`[DIAGNOSTICO] Pagina ${pageNum}: identificacion de codigo no cacheada; se conserva el OCR sin afirmar codigo.`);
+            code = null;
+            diagnosticIdUnavailable = true;
+        }
+        return { pageIndex, pageNum, sizeKB, text, code, codeSource: code ? 'imagen' : null, diagnosticIdUnavailable, error: null };
     } catch (err) {
         throwIfInsufficientQuota(err, `OpenAI pagina ${pageNum}`);
         return { pageIndex, pageNum, sizeKB: '0', text: '', code: null, codeSource: null, error: err };
@@ -714,7 +725,7 @@ function detectCoverPageCount(page1Text, numPages) {
  * @param {string[]} adjuntos - Documentos adjuntos listados en la carátula
  * @returns {Promise<{pages: Array<object|null>, matchedCodes: Set<string>, errorCount: number}>}
  */
-async function locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos) {
+async function locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos, diagnostic = false) {
     const pages = new Array(numPages).fill(null);
     const matchedCodes = new Set();
     let pending = [...adjuntos];
@@ -734,7 +745,7 @@ async function locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos) {
         from: coverPageCount,
         to: numPages,
         concurrency: config.concurrency,
-        work: pageIndex => readPage(tiffPath, pageIndex, adjuntos),
+        work: pageIndex => readPage(tiffPath, pageIndex, adjuntos, diagnostic),
         canStart: pageIndex => pageIndex <= lastPageToRead,
         // Los resultados llegan en orden de página para que dos páginas nunca
         // se queden con el mismo código.
@@ -772,7 +783,7 @@ async function locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos) {
         logger.info(`  [SKIP] Todos los codigos encontrados (${matchedCodes.size}). Omitiendo paginas ${firstUnread + 1}-${numPages}.`);
     }
 
-    if (pending.length > 0) {
+    if (pending.length > 0 && !diagnostic) {
         const unmatched = pages.filter(page => page && !page.error && !page.match);
         logger.warn(`[AUDIT] Quedan ${pending.length} codigo(s) pendientes. Identificacion dirigida en ${unmatched.length} pagina(s) sin match...`);
 
@@ -1039,7 +1050,7 @@ function hasCriticalAdjuntoFields(data) {
  * @returns {Promise<object>} - Entrada de ubicacion_adjuntos
  */
 async function extractAdjuntoGroup({ page, continuation }, doc) {
-    const { tiffPath, numPages, pages, readPageText } = doc;
+    const { tiffPath, numPages, pages, readPageText, diagnostic = false } = doc;
     const { pageIndex, pageNum, sizeKB, match } = page;
 
     for (const cont of continuation) {
@@ -1056,7 +1067,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
     let hasCriticalFields = hasCriticalAdjuntoFields(adjuntoData);
 
     // Vision+1: si no hay continuaciones detectadas y faltan campos críticos
-    if (continuation.length === 0 && !hasCriticalFields) {
+    if (!adjuntoData._error && continuation.length === 0 && !hasCriticalFields) {
         const nextPageIndex = pageIndex + 1;
         if (nextPageIndex < numPages && !pages[nextPageIndex]?.match && !pages[nextPageIndex]?.code) {
             try {
@@ -1073,13 +1084,17 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
                     hasCriticalFields = hasCriticalAdjuntoFields(adjuntoData);
                 }
             } catch (nextErr) {
-                throwIfInsufficientQuota(nextErr, `OpenAI vision+1 pagina ${nextPageIndex + 1}`);
-                logger.warn(`  [VISION+1] Error en pagina ${nextPageIndex + 1}: ${nextErr.message}`);
+                if (diagnostic && nextErr?.code === 'offline_cache_miss') {
+                    logger.info(`  [DIAGNOSTICO] Pagina ${nextPageIndex + 1}: Vision+1 sin respuesta cacheada; se conservan los campos disponibles.`);
+                } else {
+                    throwIfInsufficientQuota(nextErr, `OpenAI vision+1 pagina ${nextPageIndex + 1}`);
+                    logger.warn(`  [VISION+1] Error en pagina ${nextPageIndex + 1}: ${nextErr.message}`);
+                }
             }
         }
     }
 
-    if (!adjuntoData.juez) {
+    if (!diagnostic && !adjuntoData._error && !adjuntoData.juez) {
         const pngBuffer = await extractPageAsPng(tiffPath, pageIndex);
         const recoveredJudge = await recoverMissingJudge(pngBuffer, pageNum);
         if (recoveredJudge) {
@@ -1129,7 +1144,7 @@ async function extractAdjuntoGroup({ page, continuation }, doc) {
  * @param {string} outputDir - Directorio donde guardar los archivos de salida
  * @returns {Promise<{outputPath: string, jsonPath: string, numPages: number, success: number, errors: number, skipped: number, elapsed: string, extractedData: object}>}
  */
-async function processFileImpl(tiffPath, outputDir) {
+async function processFileImpl(tiffPath, outputDir, { diagnostic = false } = {}) {
     const startTime = Date.now();
     const d = new Date();
     const now = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
@@ -1213,16 +1228,20 @@ async function processFileImpl(tiffPath, outputDir) {
     // ===================================================================
 
     const { pages, matchedCodes, errorCount: pageErrorCount } = adjuntos.length > 0 && numPages > coverPageCount
-        ? await locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos)
+        ? await locateAdjuntos(tiffPath, numPages, coverPageCount, adjuntos, diagnostic)
         : { pages: new Array(numPages).fill(null), matchedCodes: new Set(), errorCount: 0 };
     let errorCount = pageErrorCount;
 
     for (const page of pages) {
         if (page && !page.error) transcribedPages.add(page.pageIndex);
     }
+    const diagnosticIdsUnavailable = diagnostic
+        ? pages.filter(page => page?.diagnosticIdUnavailable).length : 0;
 
     reconcileMatches(pages, adjuntos, matchedCodes, numPages);
-    const codigosNoVerificados = await verifyMatchedCodes(tiffPath, pages, numPages, manualConfirmations);
+    const codigosNoVerificados = diagnostic
+        ? [] : await verifyMatchedCodes(tiffPath, pages, numPages, manualConfirmations);
+    if (diagnostic) logger.warn(`[DIAGNOSTICO] Verificacion visual omitida; ${diagnosticIdsUnavailable} identificacion(es) sin cache. Este resultado no se puede publicar.`);
 
     // ===================================================================
     // FASE 3: Extraccion de datos de cada adjunto (en paralelo)
@@ -1233,6 +1252,7 @@ async function processFileImpl(tiffPath, outputDir) {
         .filter(page => page?.possibleNewDocument)
         .map(page => ({ pagina: page.pageNum, identificador: page.possibleNewDocument }));
     const ubicacion_adjuntos = [];
+    let adjuntosTerminados = 0;
 
     if (groups.length > 0) {
         logger.info(`[FASE 3] Extrayendo datos de ${groups.length} adjunto(s) (${config.concurrency} en paralelo)...`);
@@ -1240,6 +1260,7 @@ async function processFileImpl(tiffPath, outputDir) {
             tiffPath,
             numPages,
             pages,
+            diagnostic,
             readPageText: createPageTextReader(tiffPath, pages, transcribedPages)
         };
 
@@ -1250,10 +1271,31 @@ async function processFileImpl(tiffPath, outputDir) {
             work: async index => {
                 const { page } = groups[index];
                 try {
-                    return await extractAdjuntoGroup(groups[index], doc);
+                    const entry = await extractAdjuntoGroup(groups[index], doc);
+                    adjuntosTerminados++;
+                    const data = {
+                        pagina: entry.pagina,
+                        nro_cite: entry.nro_cite || '',
+                        fecha_cite: entry.fecha_cite || '',
+                        ciudad_cite: entry.ciudad_cite || '',
+                        demandante: entry.demandante || '',
+                        juez: entry.juez || '',
+                        juzgado: entry.juzgado || '',
+                        demandados: entry.demandados?.length || 0,
+                        monto_retenido: entry.monto_retenido || '',
+                        moneda: entry.moneda || ''
+                    };
+                    const progress = `[AVANCE] ${adjuntosTerminados}/${groups.length} ${entry.id_buscado}`;
+                    if (entry._error) {
+                        logger.error(`${progress} REVISAR: ${entry._error}${entry._conflictos?.length ? `; ${entry._conflictos.join('; ')}` : ''}; datos parciales ${JSON.stringify(data)}${entry._fragmentos_pendientes ? `; ${entry._fragmentos_pendientes} fragmento(s) sin consultar` : ''}`);
+                    } else {
+                        logger.success(`${progress} extraido: ${JSON.stringify(data)}`);
+                    }
+                    return entry;
                 } catch (err) {
                     throwIfInsufficientQuota(err, `OpenAI pagina ${page.pageNum}`);
-                    logger.error(`  [ERROR] Pagina ${page.pageNum}/${numPages}: ${err.message}`);
+                    adjuntosTerminados++;
+                    logger.error(`[AVANCE] ${adjuntosTerminados}/${groups.length} ${page.match.code} REVISAR: error en pagina ${page.pageNum}/${numPages}: ${err.message}`);
                     errorCount++;
                     return null;
                 }
@@ -1305,7 +1347,7 @@ async function processFileImpl(tiffPath, outputDir) {
         logger.warn('+======================================================+');
         logger.separator();
     } else if (adjuntos.length > 0) {
-        logger.success(`[OK] Todos los ${adjuntos.length} documentos adjuntos fueron localizados exitosamente.`);
+        logger.info(`[UBICACION] Los ${adjuntos.length} codigos R fueron localizados; la extraccion y validacion de campos se reportan aparte.`);
     }
 
     // ===================================================================
@@ -1374,24 +1416,31 @@ async function processFileImpl(tiffPath, outputDir) {
     const adjuntosConMatchAproximado = ubicacion_adjuntos.filter(a => a._advertencia_match_aproximado);
     const adjuntosConValoresDistintos = ubicacion_adjuntos.filter(a => a._advertencia_valores_distintos);
     const advertencias = [];
+    const erroresBloqueantes = [];
+    if (diagnostic) erroresBloqueantes.push('Diagnostico de cache: codigos R sin nueva verificacion visual');
 
     if (adjuntosConError.length > 0) {
         advertencias.push(`${adjuntosConError.length} adjunto(s) con error de extraccion: ${adjuntosConError.map(a => `${a.id_buscado} (${a._error})`).join(', ')}`);
+        erroresBloqueantes.push(...adjuntosConError.map(a => `${a.id_buscado}: ${a._error}${a._conflictos?.length ? `; ${a._conflictos.join('; ')}` : ''}`));
     }
     if (extractedData._error) {
         advertencias.push(`Extraccion de caratula incompleta: ${extractedData._error}`);
+        erroresBloqueantes.push(`Caratula: ${extractedData._error}`);
     }
     if (codigosNoVerificados.length > 0) {
         advertencias.push(`${codigosNoVerificados.length} codigo(s) R sin confirmacion visual exacta: ${codigosNoVerificados.map(item => item.esperado).join(', ')}`);
+        erroresBloqueantes.push(`Codigos R sin verificar: ${codigosNoVerificados.map(item => item.esperado).join(', ')}`);
     }
     if (paginasDocumentoNoIdentificado.length > 0) {
         advertencias.push(`Posible documento nuevo sin codigo R en pagina(s): ${paginasDocumentoNoIdentificado.map(item => `${item.pagina} (${item.identificador})`).join(', ')}`);
+        erroresBloqueantes.push(`Documento sin codigo R en pagina(s): ${paginasDocumentoNoIdentificado.map(item => item.pagina).join(', ')}`);
     }
     if (adjuntosRecuperadosPorAuditoria.length > 0) {
         advertencias.push(`${adjuntosRecuperadosPorAuditoria.length} codigo(s) recuperado(s) por auditoria Vision: ${adjuntosRecuperadosPorAuditoria.map(a => a.id_buscado).join(', ')}`);
     }
     if (adjuntosConMatchAproximado.length > 0) {
         advertencias.push(`${adjuntosConMatchAproximado.length} match(es) aproximado(s) requieren revision manual: ${adjuntosConMatchAproximado.map(a => `${a.id_encontrado}->${a.id_buscado}`).join(', ')}`);
+        erroresBloqueantes.push(`Codigos aproximados sin confirmar: ${adjuntosConMatchAproximado.map(a => `${a.id_encontrado}->${a.id_buscado}`).join(', ')}`);
     }
     // Solo informativo: juez y juzgado escritos distinto no cambian a quien ni
     // cuanto se retiene, por eso no bloquean el TIFF.
@@ -1403,12 +1452,14 @@ async function processFileImpl(tiffPath, outputDir) {
     }
     if (notFound.length > 0) {
         advertencias.push(`${notFound.length} codigo(s) no encontrados en el documento`);
+        erroresBloqueantes.push(`Codigos no encontrados: ${notFound.map(doc => extractDocCode(doc) || 'SIN_CODIGO').join(', ')}`);
     }
     if (errorCount > 0) {
         advertencias.push(`${errorCount} pagina(s) con errores de procesamiento`);
+        erroresBloqueantes.push(`${errorCount} pagina(s) con errores de procesamiento`);
     }
 
-    const tieneErrores = Boolean(extractedData._error) ||
+    const tieneErrores = diagnostic || Boolean(extractedData._error) ||
         adjuntosConError.length > 0 ||
         codigosNoVerificados.length > 0 ||
         paginasDocumentoNoIdentificado.length > 0 ||
@@ -1430,6 +1481,7 @@ async function processFileImpl(tiffPath, outputDir) {
         tiene_errores: tieneErrores,
         estado_procesamiento: estadoProcesamiento,
         advertencias: advertencias.length > 0 ? advertencias : undefined,
+        errores_bloqueantes: erroresBloqueantes.length > 0 ? erroresBloqueantes : undefined,
         ...extractedData,
         ubicacion_adjuntos: ubicacion_adjuntos.length > 0 ? ubicacion_adjuntos : undefined,
         codigos_no_encontrados: notFound.length > 0 ? notFound.map(d => extractDocCode(d) || 'SIN_CODIGO') : undefined,
@@ -1440,6 +1492,8 @@ async function processFileImpl(tiffPath, outputDir) {
             version_sistema: '2.3.5',
             fecha_iso: new Date().toISOString(),
             hash_archivo_sha256: archivoHash || undefined,
+            diagnostico_sin_api: diagnostic || undefined,
+            identificaciones_sin_cache: diagnostic ? diagnosticIdsUnavailable : undefined,
             confirmaciones_manuales: ubicacion_adjuntos.filter(a => a.codigo_verificacion_fuente === 'manual')
                 .map(a => ({ pagina: a.pagina, codigo: a.id_buscado })),
             adjuntos_con_error: adjuntosConError.length > 0 ? adjuntosConError.map(a => a.id_buscado) : undefined,
@@ -1460,7 +1514,8 @@ async function processFileImpl(tiffPath, outputDir) {
 
         // Rename atomico (misma particion)
         fs.renameSync(tmpJsonPath, jsonPath);
-        logger.success(`[JSON] JSON guardado con integridad verificada: ${path.basename(jsonPath)}`);
+        if (diagnostic) logger.info('[DIAGNOSTICO] Datos reconstruidos en carpeta temporal; no se publicaran.');
+        else logger.success(`[JSON] JSON guardado con integridad verificada: ${path.basename(jsonPath)}`);
     } catch (jsonErr) {
         // Si falla la escritura atomica, intentar escribir directamente
         logger.error(`[JSON] Error en escritura atomica: ${jsonErr.message}. Intentando escritura directa...`);
@@ -1471,7 +1526,9 @@ async function processFileImpl(tiffPath, outputDir) {
         try { if (fs.existsSync(tmpJsonPath)) fs.unlinkSync(tmpJsonPath); } catch { /* ignore */ }
     }
 
-    if (tieneErrores) {
+    if (diagnostic) {
+        logger.info(`[DIAGNOSTICO] Reconstruccion terminada para ${path.basename(tiffPath)} (${elapsedStr}); no se publico ningun resultado.`);
+    } else if (tieneErrores) {
         logger.warn(`⚠️ Completado CON ERRORES: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas, ${adjuntosConError.length} con error`);
     } else {
         logger.success(`Completado: ${path.basename(tiffPath)} (${elapsedStr}) - ${successCount} transcritas, ${skippedCount} omitidas`);
@@ -1480,6 +1537,7 @@ async function processFileImpl(tiffPath, outputDir) {
     return { outputPath, jsonPath, numPages, success: successCount, errors: errorCount, skipped: skippedCount, elapsed: elapsedStr, extractedData: jsonOutput };
 }
 
-export function processFile(tiffPath, outputDir) {
-    return withOpenAIUsage(path.basename(tiffPath), () => processFileImpl(tiffPath, outputDir));
+export function processFile(tiffPath, outputDir, options = {}) {
+    const work = () => withOpenAIUsage(path.basename(tiffPath), () => processFileImpl(tiffPath, outputDir, options));
+    return options.diagnostic ? withCacheOnly(work) : work();
 }

@@ -8,6 +8,7 @@ import openai from '../openai-client.js';
 import config from '../config.js';
 import { isVisuallyBlankPage, processFile } from '../ocr-engine.js';
 import { recordManualCodeConfirmation } from '../manual-code-confirmations.js';
+import { CacheOnlyMissError } from '../completion-cache.js';
 
 // Cada pagina de los fixtures mide 60 + numero de pagina px de ancho, asi el
 // mock sabe que pagina recibe aunque el prompt no lo diga.
@@ -143,6 +144,7 @@ describe('processFile', () => {
         assert.equal(data.tiene_errores, true);
         assert.equal(data.estado_procesamiento, 'error');
         assert.match(data.advertencias.join(' '), /Extraccion de caratula incompleta/);
+        assert.match(data.errores_bloqueantes.join(' '), /Caratula/);
     });
 
     it('acepta SIREFO de una pagina con adjunto sin R y conserva la referencia; otros faltantes siguen siendo errores', async () => {
@@ -462,6 +464,32 @@ describe('processFile', () => {
             { pagina: 2, esperado: 'R-12345', lectura_visual: 'R-12346' }
         ]);
         assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
+    });
+
+    it('el diagnostico omite verificaciones visuales y nunca marca el TIFF como completo', async () => {
+        const calls = mockOpenAI(['R-12345'], {
+            1: { text: COVER },
+            2: { text: `ASFI RECEPCION R-12345\n${OFICIO}` },
+            3: { text: CONTINUACION }
+        });
+        const mockedCreate = openai.chat.completions.create;
+        openai.chat.completions.create = request => {
+            if (request.messages[0].content === SYSTEM.id && pageOf(request) === 3) {
+                throw new CacheOnlyMissError('Diagnostico sin API: respuesta negativa de ID no guardada');
+            }
+            return mockedCreate(request);
+        };
+        const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiff-diagnostic-test-'));
+        try {
+            const data = (await processFile(fixture, outputDir, { diagnostic: true })).extractedData;
+            assert.equal(data.estado_procesamiento, 'requiere_revision');
+            assert.equal(data._auditoria.diagnostico_sin_api, true);
+            assert.equal(data._auditoria.identificaciones_sin_cache, 1);
+            assert.equal(data.ubicacion_adjuntos[0].codigo_verificado, false);
+            assert.deepEqual(calls.id, []);
+        } finally {
+            fs.rmSync(outputDir, { recursive: true, force: true });
+        }
     });
 
     it('resuelve una lectura visual discordante con una lectura adicional', async () => {

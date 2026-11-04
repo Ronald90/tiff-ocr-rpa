@@ -909,13 +909,21 @@ export async function extractAdjuntoFields(ocrText, { primaryText, continuationT
 
     const merged = { ...ADJUNTO_EMPTY, demandados: [] };
     const conflictingFields = new Set();
+    const conflictingDetails = [];
     const differentValues = [];
+    let processedChunks = 0;
 
     for (let index = 0; index < chunks.length; index++) {
         if (!chunks[index].trim()) continue;
         const result = await extractAdjuntoChunk(chunks[index], index, chunks.length, index === 0 ? 'primary' : 'continuation', chunks[0]);
+        processedChunks = index + 1;
         if (result._error) {
-            return { ...ADJUNTO_EMPTY, _error: `Fragmento ${index + 1}/${chunks.length}: ${result._error}` };
+            // El adjunto sigue rechazado, pero no se pierden los campos ya
+            // extraidos de fragmentos anteriores al informar el problema.
+            merged._error = `Fragmento ${index + 1}/${chunks.length}: ${result._error}`;
+            merged._fragmentos_extraccion = index + 1;
+            if (index + 1 < chunks.length) merged._fragmentos_pendientes = chunks.length - index - 1;
+            return merged;
         }
 
         merged.demandados.push(...result.demandados);
@@ -938,6 +946,7 @@ export async function extractAdjuntoFields(ocrText, { primaryText, continuationT
                         }
                     } else {
                         conflictingFields.add(key);
+                        conflictingDetails.push(`${key}: "${merged[key]}" frente a "${result[key]}" (fragmento ${index + 1})`);
                     }
                 }
             }
@@ -964,6 +973,9 @@ export async function extractAdjuntoFields(ocrText, { primaryText, continuationT
                 }
             }
         }
+        // Una contradiccion real ya impide publicar este adjunto. Consultar
+        // los fragmentos siguientes solo consumiria tokens sin cambiar eso.
+        if (conflictingFields.size > 0) break;
     }
 
     applyContinuationMetadataFallback(merged, continuationTexts);
@@ -977,6 +989,7 @@ export async function extractAdjuntoFields(ocrText, { primaryText, continuationT
             differentValues.push(`juez "${primaryJudge}" segun la firma de la pagina principal; se conserva "${merged.juez}"`);
         } else {
             conflictingFields.add('juez');
+            conflictingDetails.push(`juez: "${merged.juez}" frente a "${primaryJudge}" (firma de pagina principal)`);
         }
     }
 
@@ -985,8 +998,10 @@ export async function extractAdjuntoFields(ocrText, { primaryText, continuationT
     for (const key of mergedDemandados.conflictingFields) conflictingFields.add(key);
     if (conflictingFields.size > 0) {
         merged._error = `Campos del mismo proceso contradictorios entre fragmentos: ${[...conflictingFields].join(', ')}`;
+        if (conflictingDetails.length > 0) merged._conflictos = conflictingDetails;
     }
     if (differentValues.length > 0) merged._advertencia_valores_distintos = differentValues;
-    if (chunks.length > 1) merged._fragmentos_extraccion = chunks.length;
+    if (chunks.length > 1) merged._fragmentos_extraccion = processedChunks;
+    if (processedChunks < chunks.length) merged._fragmentos_pendientes = chunks.length - processedChunks;
     return merged;
 }

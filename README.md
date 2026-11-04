@@ -50,12 +50,31 @@ el historial registra los intentos y no impide validar cambios. Si ya existe
 un resultado con el mismo nombre en `output/`, el nuevo recibe un sufijo de tiempo.
 En modo RPA, `output/` contiene solo los TXT y JSON de TIFF aceptados. Si un
 TIFF termina con errores, `error/` conserva solo el original, sin TXT ni JSON.
+Durante la extraccion, cada `[AVANCE]` muestra el codigo R, los campos ya
+obtenidos y cuántos adjuntos terminaron. Si hay un conflicto, muestra los dos
+valores y el fragmento donde apareció. Al final, `[MOTIVO]` enumera solo las
+causas que impiden publicar el TIFF. Estas lineas quedan en `rpa.log` para
+revisarlas sin repetir llamadas a la API. Los datos parciales de un TIFF con
+error se muestran en el log, pero no se publican como resultados definitivos.
+Si el TIFF ya se procesó y `OCR_CACHE_DIR` está configurado, puedes volver a
+ver los campos sin gastar tokens ni mover el archivo:
+
+```bash
+npm run diagnose-cache -- error/archivo.tif
+# Agrega --full para imprimir el JSON completo en la terminal, sin guardarlo.
+```
+
+El diagnóstico usa exclusivamente respuestas existentes en la caché. Omite la
+verificación visual y nunca publica resultados. Las identificaciones negativas
+no se guardan en caché y se muestran como no disponibles; si falta el OCR o la
+extracción, termina con un aviso sin consultar la API. Debe usarse con el mismo TIFF,
+modelos, parámetros y prompts de la ejecución anterior.
 Si configuras `OCR_CACHE_DIR`, las respuestas válidas de la API se conservan en
 esa carpeta como archivos binarios comprimidos. Al volver a intentar el mismo
 TIFF se reutilizan las solicitudes idénticas, incluso si el TIFF anterior fue
 rechazado. Cambiar el modelo, el prompt, sus parámetros o la imagen crea otra
-solicitud y no reutiliza la respuesta vieja. Las lecturas visuales de
-verificación siempre se repiten para permitir resolver discrepancias. La
+solicitud y no reutiliza la respuesta vieja. En el procesamiento normal, las
+lecturas visuales de verificación se repiten para resolver discrepancias. La
 primera ejecución después de activar la caché todavía debe consultar la API.
 La carpeta de caché contiene datos del documento; se puede borrar manualmente
 cuando ya no se necesite, y no se publica en `output/`.

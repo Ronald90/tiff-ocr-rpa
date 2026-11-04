@@ -8,6 +8,7 @@
     "start": "node main.js",
     "watch": "node watcher.js",
     "confirm-code": "node confirm-code.js",
+    "diagnose-cache": "node diagnose-cache.js",
     "test": "node --test 'tests/**/*.test.js'",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"

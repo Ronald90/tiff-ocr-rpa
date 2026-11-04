@@ -227,7 +227,9 @@ async function processPendingFiles() {
                         logger.success(`[OK] ${filename} -> processed/`);
                     } else if (result.success > 0 && hasCriticalErrors) {
                         moveFile(filePath, config.errorDir);
-                        logger.error(`[LEGAL] ${filename} estado ${result.extractedData?.estado_procesamiento || 'error'}: ${(result.extractedData?.advertencias || []).join('; ') || 'validacion incompleta'}. Solo el TIFF se mueve a error/.`);
+                        const reasons = result.extractedData?.errores_bloqueantes || ['Validacion incompleta'];
+                        logger.error(`[LEGAL] ${filename}: ${reasons.length} motivo(s) bloqueante(s). Solo el TIFF se mueve a error/.`);
+                        for (const reason of reasons) logger.error(`  [MOTIVO] ${reason}`);
                     } else {
                         moveFile(filePath, config.errorDir);
                         logger.error(`Todas las páginas fallaron para ${filename}. Solo el TIFF se mueve a error/.`);
